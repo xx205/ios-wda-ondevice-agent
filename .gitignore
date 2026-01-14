@@ -1,0 +1,10 @@
+.DS_Store
+*.xcresult
+*.xctestrun
+*.dSYM
+*.log
+
+# Local build / output
+wda_derived*
+DerivedData
+/tmp
