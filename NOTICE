@@ -1,0 +1,6 @@
+ios-wda-ondevice-agent
+Copyright 2026 Xu Xiang
+
+This product includes and depends on WebDriverAgent (appium/WebDriverAgent),
+which is licensed under the BSD 3-Clause License. See THIRD_PARTY_NOTICES.md.
+
