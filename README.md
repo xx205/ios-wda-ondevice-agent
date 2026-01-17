@@ -28,9 +28,11 @@
 - `GET /agent`：配置/启动页面（HTML）
 - `GET /agent/status`：当前运行状态（JSON）
 - `GET /agent/logs`：最近日志（JSON）
+- `GET /agent/chat`：对话历史（JSON）
 - `POST /agent/config`：保存配置（JSON body）
 - `POST /agent/start`：保存配置并启动（JSON body）
 - `POST /agent/stop`：停止（无需 body）
+- `POST /agent/reset`：重置运行态（不清空 base_url/model/task，不删除已记住的 API key）
 
 ---
 
@@ -121,6 +123,14 @@ bash scripts/install_wda_prepared_runner.sh --device <UDID>
 - `Task`
 
 然后点击 **Start**。
+
+### 7)（可选）用原生 SwiftUI App 代替 Safari 网页
+
+仓库内带一个原生 iOS 控制台 App：`apps/OnDeviceAgentConsole`。
+
+它会调用 `http://127.0.0.1:8100/agent/*` 这套接口完成配置/启动/日志/对话等功能（执行端仍然是 WDA Runner）。
+
+参考：`docs/recipes/ondevice_agent_console_app.md`
 
 ---
 

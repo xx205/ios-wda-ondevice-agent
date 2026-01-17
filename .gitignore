@@ -3,6 +3,8 @@
 *.xctestrun
 *.dSYM
 *.log
+*.xcuserstate
+**/xcuserdata/
 
 # Local build / output
 wda_derived*
