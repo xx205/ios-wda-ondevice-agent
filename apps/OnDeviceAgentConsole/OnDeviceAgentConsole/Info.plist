@@ -6,6 +6,10 @@
   <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleName</key>
   <string>$(PRODUCT_NAME)</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
   <key>CFBundleDisplayName</key>
   <string>On‑Device Agent</string>
   <key>CFBundleShortVersionString</key>
