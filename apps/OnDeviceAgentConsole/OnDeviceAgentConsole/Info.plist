@@ -33,6 +33,8 @@
   </array>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Connect to WebDriverAgentRunner on your local network.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Scan QR codes to import agent configuration.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key>

@@ -3,6 +3,7 @@ import Foundation
 enum AgentClientError: LocalizedError {
   case invalidWdaURL(String)
   case httpStatus(Int, String)
+  case decodingFailed(String)
   case badResponse
 
   var errorDescription: String? {
@@ -14,6 +15,11 @@ enum AgentClientError: LocalizedError {
         return "HTTP \(code)"
       }
       return "HTTP \(code): \(body)"
+    case .decodingFailed(let body):
+      if body.isEmpty {
+        return "Cannot decode JSON response"
+      }
+      return "Cannot decode JSON response: \(body)"
     case .badResponse:
       return "Bad response"
     }
@@ -21,11 +27,20 @@ enum AgentClientError: LocalizedError {
 }
 
 final class AgentClient {
+  static let defaultSession: URLSession = {
+    let cfg = URLSessionConfiguration.ephemeral
+    cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+    cfg.timeoutIntervalForRequest = 8
+    cfg.timeoutIntervalForResource = 8
+    cfg.waitsForConnectivity = false
+    return URLSession(configuration: cfg)
+  }()
+
   private let baseURL: URL
   private let session: URLSession
   private let decoder: JSONDecoder
 
-  init(wdaURL: String, session: URLSession = .shared) throws {
+  init(wdaURL: String, session: URLSession = AgentClient.defaultSession) throws {
     let trimmed = wdaURL.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let url = URL(string: trimmed), url.scheme != nil, url.host != nil else {
       throw AgentClientError.invalidWdaURL(wdaURL)
@@ -51,7 +66,15 @@ final class AgentClient {
   }
 
   private func decodeEnvelope<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-    try decoder.decode(WDAEnvelope<T>.self, from: data).value
+    do {
+      return try decoder.decode(WDAEnvelope<T>.self, from: data).value
+    } catch {
+      // Some implementations may return the object directly (without { "value": ... } envelope).
+      if let direct = try? decoder.decode(T.self, from: data) {
+        return direct
+      }
+      throw error
+    }
   }
 
   private func fetch<T: Decodable>(_ req: URLRequest, as type: T.Type) async throws -> T {
@@ -63,7 +86,16 @@ final class AgentClient {
       let body = String(data: data, encoding: .utf8) ?? ""
       throw AgentClientError.httpStatus(http.statusCode, body)
     }
-    return try decodeEnvelope(type, from: data)
+    do {
+      return try decodeEnvelope(type, from: data)
+    } catch {
+      var body = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
+      let limit = 2000
+      if body.count > limit {
+        body = String(body.prefix(limit)) + "…"
+      }
+      throw AgentClientError.decodingFailed(body)
+    }
   }
 
   func getStatus() async throws -> AgentStatus {
@@ -98,4 +130,3 @@ final class AgentClient {
     try await fetch(request("POST", "/agent/reset", body: Data("{}".utf8)), as: AgentStatus.self)
   }
 }
-
