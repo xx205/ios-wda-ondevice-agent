@@ -7,6 +7,7 @@
 **/xcuserdata/
 
 # Local build / output
+**/build/
 wda_derived*
 DerivedData
 /tmp

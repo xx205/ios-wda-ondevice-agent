@@ -47,7 +47,10 @@ static NSString *const kOnDeviceAgentDebugLogRawAssistantKey = @"ONDEVICE_AGENT_
 static NSString *const kOnDeviceAgentReasoningEffortKey = @"ONDEVICE_AGENT_REASONING_EFFORT";
 static NSString *const kOnDeviceAgentDoubaoSeedEnableSessionCacheKey = @"ONDEVICE_AGENT_DOUBAO_SEED_ENABLE_SESSION_CACHE";
 
-static NSInteger const kOnDeviceAgentDefaultMaxSteps = 60;
+static NSString *const kOnDeviceAgentDefaultBaseURL = @"https://ark.cn-beijing.volces.com/api/v3/responses";
+static NSString *const kOnDeviceAgentDefaultModel = @"doubao-seed-1-8-251228";
+
+static NSInteger const kOnDeviceAgentDefaultMaxSteps = 120;
 static NSInteger const kOnDeviceAgentDefaultMaxCompletionTokens = 32768;
 static double const kOnDeviceAgentDefaultTimeoutSeconds = 90.0;
 static double const kOnDeviceAgentDefaultStepDelaySeconds = 0.5;
@@ -2554,8 +2557,14 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 {
   NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
   NSString *task = [d stringForKey:kOnDeviceAgentTaskKey] ?: @"";
-  NSString *baseURL = [d stringForKey:kOnDeviceAgentBaseURLKey] ?: @"";
-  NSString *model = [d stringForKey:kOnDeviceAgentModelKey] ?: @"";
+  NSString *baseURL = [d stringForKey:kOnDeviceAgentBaseURLKey] ?: kOnDeviceAgentDefaultBaseURL;
+  if (OnDeviceAgentTrim(baseURL).length == 0) {
+    baseURL = kOnDeviceAgentDefaultBaseURL;
+  }
+  NSString *model = [d stringForKey:kOnDeviceAgentModelKey] ?: kOnDeviceAgentDefaultModel;
+  if (OnDeviceAgentTrim(model).length == 0) {
+    model = kOnDeviceAgentDefaultModel;
+  }
   NSString *apiKey = @"";
   BOOL remember = [d boolForKey:kOnDeviceAgentRememberApiKeyKey];
   if (remember) {
@@ -2729,6 +2738,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 
   cfg[@"use_custom_system_prompt"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseCustomSystemPromptKey], NO));
   cfg[@"system_prompt"] = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentCustomSystemPromptKey]);
+  cfg[@"default_system_prompt"] = OnDeviceAgentDefaultSystemPromptTemplate();
   cfg[@"reasoning_effort"] = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentReasoningEffortKey]);
   cfg[@"doubao_seed_enable_session_cache"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentDoubaoSeedEnableSessionCacheKey], YES));
 
