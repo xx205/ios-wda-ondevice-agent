@@ -6,27 +6,37 @@
   objectVersion = 56;
   objects = {
 
-/* Begin PBXBuildFile section */
-    A0B1C2D3E4F5060708090B00 /* OnDeviceAgentConsoleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A10 /* OnDeviceAgentConsoleApp.swift */; };
-    A0B1C2D3E4F5060708090B01 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A11 /* ContentView.swift */; };
-    A0B1C2D3E4F5060708090B02 /* ConsoleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */; };
-    A0B1C2D3E4F5060708090B03 /* AgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A12 /* AgentClient.swift */; };
-    A0B1C2D3E4F5060708090B04 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A13 /* Models.swift */; };
-    A0B1C2D3E4F5060708090B05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A16 /* Assets.xcassets */; };
-    A0B1C2D3E4F5060708090B06 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */; };
-/* End PBXBuildFile section */
+	/* Begin PBXBuildFile section */
+	    A0B1C2D3E4F5060708090B00 /* OnDeviceAgentConsoleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A10 /* OnDeviceAgentConsoleApp.swift */; };
+	    A0B1C2D3E4F5060708090B01 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A11 /* ContentView.swift */; };
+	    A0B1C2D3E4F5060708090B02 /* ConsoleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */; };
+	    A0B1C2D3E4F5060708090B03 /* AgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A12 /* AgentClient.swift */; };
+	    A0B1C2D3E4F5060708090B04 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A13 /* Models.swift */; };
+	    A0B1C2D3E4F5060708090B07 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A19 /* ActivityView.swift */; };
+	    A0B1C2D3E4F5060708090B08 /* QRCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A1A /* QRCode.swift */; };
+	    A0B1C2D3E4F5060708090B09 /* TempFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A1B /* TempFiles.swift */; };
+	    A0B1C2D3E4F5060708090B0B /* ActionOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A1E /* ActionOverlay.swift */; };
+	    A0B1C2D3E4F5060708090B05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A16 /* Assets.xcassets */; };
+	    A0B1C2D3E4F5060708090B06 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */; };
+	    A0B1C2D3E4F5060708090B0A /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A1D /* Localizable.strings */; };
+	/* End PBXBuildFile section */
 
-/* Begin PBXFileReference section */
-    A0B1C2D3E4F5060708090A10 /* OnDeviceAgentConsoleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceAgentConsoleApp.swift; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A11 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A12 /* AgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentClient.swift; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A13 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleStore.swift; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A15 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A16 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
-    A0B1C2D3E4F5060708090A17 /* OnDeviceAgentConsole.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OnDeviceAgentConsole.app; sourceTree = BUILT_PRODUCTS_DIR; };
-/* End PBXFileReference section */
+	/* Begin PBXFileReference section */
+	    A0B1C2D3E4F5060708090A10 /* OnDeviceAgentConsoleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceAgentConsoleApp.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A11 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A12 /* AgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentClient.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A13 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleStore.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A15 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A16 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A19 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A1A /* QRCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCode.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A1B /* TempFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempFiles.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A1E /* ActionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionOverlay.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A1D /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A17 /* OnDeviceAgentConsole.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OnDeviceAgentConsole.app; sourceTree = BUILT_PRODUCTS_DIR; };
+	/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
     A0B1C2D3E4F5060708090A22 /* Frameworks */ = {
@@ -55,19 +65,32 @@
       name = Products;
       sourceTree = "<group>";
     };
-    A0B1C2D3E4F5060708090A0F /* OnDeviceAgentConsole */ = {
+	    A0B1C2D3E4F5060708090A0F /* OnDeviceAgentConsole */ = {
+	      isa = PBXGroup;
+	      children = (
+	        A0B1C2D3E4F5060708090A10 /* OnDeviceAgentConsoleApp.swift */,
+	        A0B1C2D3E4F5060708090A11 /* ContentView.swift */,
+	        A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */,
+	        A0B1C2D3E4F5060708090A12 /* AgentClient.swift */,
+	        A0B1C2D3E4F5060708090A13 /* Models.swift */,
+	        A0B1C2D3E4F5060708090A1C /* Utilities */,
+	        A0B1C2D3E4F5060708090A15 /* Info.plist */,
+	        A0B1C2D3E4F5060708090A1D /* Localizable.strings */,
+	        A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */,
+	        A0B1C2D3E4F5060708090A16 /* Assets.xcassets */,
+	      );
+      path = OnDeviceAgentConsole;
+      sourceTree = "<group>";
+    };
+    A0B1C2D3E4F5060708090A1C /* Utilities */ = {
       isa = PBXGroup;
       children = (
-        A0B1C2D3E4F5060708090A10 /* OnDeviceAgentConsoleApp.swift */,
-        A0B1C2D3E4F5060708090A11 /* ContentView.swift */,
-        A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */,
-        A0B1C2D3E4F5060708090A12 /* AgentClient.swift */,
-        A0B1C2D3E4F5060708090A13 /* Models.swift */,
-        A0B1C2D3E4F5060708090A15 /* Info.plist */,
-        A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */,
-        A0B1C2D3E4F5060708090A16 /* Assets.xcassets */,
+        A0B1C2D3E4F5060708090A19 /* ActivityView.swift */,
+        A0B1C2D3E4F5060708090A1E /* ActionOverlay.swift */,
+        A0B1C2D3E4F5060708090A1A /* QRCode.swift */,
+        A0B1C2D3E4F5060708090A1B /* TempFiles.swift */,
       );
-      path = OnDeviceAgentConsole;
+      path = Utilities;
       sourceTree = "<group>";
     };
 /* End PBXGroup section */
@@ -93,7 +116,7 @@
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-    A0B1C2D3E4F5060708090A0B /* Project object */ = {
+	    A0B1C2D3E4F5060708090A0B /* Project object */ = {
       isa = PBXProject;
       attributes = {
         BuildIndependentTargetsInParallel = 1;
@@ -109,10 +132,11 @@
       compatibilityVersion = "Xcode 16.0";
       developmentRegion = en;
       hasScannedForEncodings = 0;
-      knownRegions = (
-        en,
-        Base,
-      );
+	      knownRegions = (
+	        en,
+	        Base,
+	        zh-Hans,
+	      );
       mainGroup = A0B1C2D3E4F5060708090A0D;
       productRefGroup = A0B1C2D3E4F5060708090A0E /* Products */;
       projectDirPath = "";
@@ -124,13 +148,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-    A0B1C2D3E4F5060708090A21 /* Resources */ = {
+	    A0B1C2D3E4F5060708090A21 /* Resources */ = {
       isa = PBXResourcesBuildPhase;
       buildActionMask = 2147483647;
-      files = (
-        A0B1C2D3E4F5060708090B05 /* Assets.xcassets in Resources */,
-        A0B1C2D3E4F5060708090B06 /* LaunchScreen.storyboard in Resources */,
-      );
+	      files = (
+	        A0B1C2D3E4F5060708090B05 /* Assets.xcassets in Resources */,
+	        A0B1C2D3E4F5060708090B06 /* LaunchScreen.storyboard in Resources */,
+	        A0B1C2D3E4F5060708090B0A /* Localizable.strings in Resources */,
+	      );
       runOnlyForDeploymentPostprocessing = 0;
     };
 /* End PBXResourcesBuildPhase section */
@@ -145,6 +170,10 @@
         A0B1C2D3E4F5060708090B02 /* ConsoleStore.swift in Sources */,
         A0B1C2D3E4F5060708090B03 /* AgentClient.swift in Sources */,
         A0B1C2D3E4F5060708090B04 /* Models.swift in Sources */,
+        A0B1C2D3E4F5060708090B07 /* ActivityView.swift in Sources */,
+        A0B1C2D3E4F5060708090B0B /* ActionOverlay.swift in Sources */,
+        A0B1C2D3E4F5060708090B08 /* QRCode.swift in Sources */,
+        A0B1C2D3E4F5060708090B09 /* TempFiles.swift in Sources */,
       );
       runOnlyForDeploymentPostprocessing = 0;
     };
@@ -158,7 +187,6 @@
         CLANG_ENABLE_MODULES = YES;
         CODE_SIGN_STYLE = Automatic;
         CURRENT_PROJECT_VERSION = 1;
-        DEVELOPMENT_TEAM = "";
         ENABLE_PREVIEWS = YES;
         GENERATE_INFOPLIST_FILE = NO;
         INFOPLIST_FILE = OnDeviceAgentConsole/Info.plist;
@@ -180,7 +208,6 @@
         CLANG_ENABLE_MODULES = YES;
         CODE_SIGN_STYLE = Automatic;
         CURRENT_PROJECT_VERSION = 1;
-        DEVELOPMENT_TEAM = "";
         ENABLE_PREVIEWS = YES;
         GENERATE_INFOPLIST_FILE = NO;
         INFOPLIST_FILE = OnDeviceAgentConsole/Info.plist;

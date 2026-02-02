@@ -5,6 +5,7 @@ enum AgentClientError: LocalizedError {
   case httpStatus(Int, String)
   case decodingFailed(String)
   case badResponse
+  case server(String)
 
   var errorDescription: String? {
     switch self {
@@ -22,6 +23,8 @@ enum AgentClientError: LocalizedError {
       return "Cannot decode JSON response: \(body)"
     case .badResponse:
       return "Bad response"
+    case .server(let message):
+      return message.isEmpty ? "Server error" : message
     }
   }
 }
@@ -112,6 +115,17 @@ final class AgentClient {
     return payload.items
   }
 
+  func getStepScreenshotPNG(step: Int) async throws -> Data {
+    let payload = try await fetch(request("GET", "/agent/step_screenshot?step=\(step)"), as: AgentStepScreenshotPayload.self)
+    if !payload.ok {
+      throw AgentClientError.server(payload.error.isEmpty ? "Screenshot not found" : payload.error)
+    }
+    guard !payload.pngBase64.isEmpty, let data = Data(base64Encoded: payload.pngBase64) else {
+      throw AgentClientError.server("Invalid screenshot payload")
+    }
+    return data
+  }
+
   func postConfig(_ cfg: AgentConfigRequest) async throws -> AgentStatus {
     let body = try JSONEncoder().encode(cfg)
     return try await fetch(request("POST", "/agent/config", body: body), as: AgentStatus.self)
@@ -128,5 +142,9 @@ final class AgentClient {
 
   func reset() async throws -> AgentStatus {
     try await fetch(request("POST", "/agent/reset", body: Data("{}".utf8)), as: AgentStatus.self)
+  }
+
+  func factoryReset() async throws -> AgentStatus {
+    try await fetch(request("POST", "/agent/factory_reset", body: Data("{}".utf8)), as: AgentStatus.self)
   }
 }

@@ -77,6 +77,7 @@ struct AgentStatus: Decodable {
   let lastMessage: String
   let config: AgentConfig
   let notes: String
+  let tokenUsage: TokenUsage
   let logLines: Int
 
   enum CodingKeys: String, CodingKey {
@@ -84,6 +85,7 @@ struct AgentStatus: Decodable {
     case lastMessage = "last_message"
     case config
     case notes
+    case tokenUsage = "token_usage"
     case logLines = "log_lines"
   }
 
@@ -93,7 +95,41 @@ struct AgentStatus: Decodable {
     lastMessage = c.decodeStringOrEmpty(forKey: .lastMessage)
     config = (try? c.decode(AgentConfig.self, forKey: .config)) ?? AgentConfig()
     notes = c.decodeStringOrEmpty(forKey: .notes)
+    tokenUsage = (try? c.decode(TokenUsage.self, forKey: .tokenUsage)) ?? TokenUsage()
     logLines = c.decodeIntLike(forKey: .logLines)
+  }
+}
+
+struct TokenUsage: Decodable {
+  let requests: Int
+  let inputTokens: Int
+  let outputTokens: Int
+  let cachedTokens: Int
+  let totalTokens: Int
+
+  enum CodingKeys: String, CodingKey {
+    case requests
+    case inputTokens = "input_tokens"
+    case outputTokens = "output_tokens"
+    case cachedTokens = "cached_tokens"
+    case totalTokens = "total_tokens"
+  }
+
+  init() {
+    requests = 0
+    inputTokens = 0
+    outputTokens = 0
+    cachedTokens = 0
+    totalTokens = 0
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    requests = c.decodeIntLike(forKey: .requests)
+    inputTokens = c.decodeIntLike(forKey: .inputTokens)
+    outputTokens = c.decodeIntLike(forKey: .outputTokens)
+    cachedTokens = c.decodeIntLike(forKey: .cachedTokens)
+    totalTokens = c.decodeIntLike(forKey: .totalTokens)
   }
 }
 
@@ -113,6 +149,8 @@ struct AgentConfig: Decodable {
   let debugLogRawAssistant: Bool
   let reasoningEffort: String
   let doubaoSeedEnableSessionCache: Bool
+  let halfResScreenshot: Bool
+  let useW3CActionsForSwipe: Bool
 
   let maxSteps: Int
   let maxCompletionTokens: Int
@@ -134,6 +172,8 @@ struct AgentConfig: Decodable {
     case debugLogRawAssistant = "debug_log_raw_assistant"
     case reasoningEffort = "reasoning_effort"
     case doubaoSeedEnableSessionCache = "doubao_seed_enable_session_cache"
+    case halfResScreenshot = "half_res_screenshot"
+    case useW3CActionsForSwipe = "use_w3c_actions_for_swipe"
     case maxSteps = "max_steps"
     case maxCompletionTokens = "max_completion_tokens"
     case timeoutSeconds = "timeout_seconds"
@@ -154,6 +194,8 @@ struct AgentConfig: Decodable {
     debugLogRawAssistant = false
     reasoningEffort = ""
     doubaoSeedEnableSessionCache = false
+    halfResScreenshot = false
+    useW3CActionsForSwipe = true
     maxSteps = 0
     maxCompletionTokens = 0
     timeoutSeconds = 0
@@ -178,6 +220,8 @@ struct AgentConfig: Decodable {
     debugLogRawAssistant = c.decodeBoolLike(forKey: .debugLogRawAssistant)
     reasoningEffort = c.decodeStringOrEmpty(forKey: .reasoningEffort)
     doubaoSeedEnableSessionCache = c.decodeBoolLike(forKey: .doubaoSeedEnableSessionCache, default: true)
+    halfResScreenshot = c.decodeBoolLike(forKey: .halfResScreenshot)
+    useW3CActionsForSwipe = c.decodeBoolLike(forKey: .useW3CActionsForSwipe, default: true)
 
     maxSteps = c.decodeIntLike(forKey: .maxSteps)
     maxCompletionTokens = c.decodeIntLike(forKey: .maxCompletionTokens)
@@ -208,6 +252,28 @@ struct AgentChatItem: Decodable, Identifiable {
 
   var id: String {
     "\(step ?? -1)-\(kind)-\(attempt ?? 0)-\(ts ?? "")"
+  }
+}
+
+struct AgentStepScreenshotPayload: Decodable {
+  let ok: Bool
+  let error: String
+  let step: Int
+  let pngBase64: String
+
+  enum CodingKeys: String, CodingKey {
+    case ok
+    case error
+    case step
+    case pngBase64 = "png_base64"
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    ok = c.decodeBoolLike(forKey: .ok)
+    error = c.decodeStringOrEmpty(forKey: .error)
+    step = c.decodeIntLike(forKey: .step)
+    pngBase64 = c.decodeStringOrEmpty(forKey: .pngBase64)
   }
 }
 
@@ -250,5 +316,7 @@ struct AgentConfigRequest: Encodable {
   var timeout_seconds: Double
   var step_delay_seconds: Double
   var insecure_skip_tls_verify: Bool
+  var half_res_screenshot: Bool
+  var use_w3c_actions_for_swipe: Bool
   var api_key: String?
 }
