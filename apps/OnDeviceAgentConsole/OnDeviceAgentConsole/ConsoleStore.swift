@@ -147,6 +147,7 @@ final class ConsoleStore: ObservableObject {
   private var refreshTask: Task<Void, Never>?
   private var refreshInFlight: Bool = false
   private var refreshPending: Bool = false
+  private var autoRefreshSuspendCount: Int = 0
   private var stateGeneration: UInt64 = 0
   private var stepScreenshotLoading: Set<Int> = []
   private var localNetworkCheckInFlight: Bool = false
@@ -532,12 +533,23 @@ final class ConsoleStore: ObservableObject {
       return
     }
     await refresh()
-    refreshTask = Task { [weak self] in
+    refreshTask = Task { @MainActor [weak self] in
       while let self, !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 1_500_000_000)
+        if self.autoRefreshSuspendCount > 0 {
+          continue
+        }
         await self.refresh()
       }
     }
+  }
+
+  func suspendAutoRefresh() {
+    autoRefreshSuspendCount += 1
+  }
+
+  func resumeAutoRefresh() {
+    autoRefreshSuspendCount = max(0, autoRefreshSuspendCount - 1)
   }
 
   func refresh() async {

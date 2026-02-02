@@ -82,7 +82,7 @@ private struct RunView: View {
                       Text(
                         String(
                           format: NSLocalizedString(
-                            "Runner (WebDriverAgentRunner-Runner) is reachable on 127.0.0.1 but not on Wi‑Fi (%@). Enable Wireless Data for Runner in iPhone Settings, then reopen Runner.",
+                            "Runner is reachable on 127.0.0.1 but not on Wi‑Fi (%@). If Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner.",
                             comment: ""
                           ),
                           net.wifiIPv4
@@ -91,7 +91,7 @@ private struct RunView: View {
                       .font(.footnote)
                       .foregroundStyle(.secondary)
 
-                      Button("Re-check") {
+                      Button("Check again") {
                         Task { await store.checkLocalNetworkAccess(force: true) }
                       }
                       .font(.footnote)
@@ -145,8 +145,19 @@ private struct RunView: View {
                   }
                 }
               }
-              Button("Edit Task") { isEditingTask = true }
-              if !store.draft.task.isEmpty {
+              HStack {
+                Text("Task")
+                  .font(.headline)
+                Spacer()
+                Button("Edit") { isEditingTask = true }
+                  .font(.footnote)
+              }
+
+              if store.draft.task.isEmpty {
+                Text("Enter a task…")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+              } else {
                 Text(store.draft.task)
                   .font(.footnote)
                   .lineLimit(6)
@@ -161,32 +172,28 @@ private struct RunView: View {
                 }
               }
 
-              Button("Start") {
+              Button("Start run") {
                 Task { await store.startAgent() }
               }
               .disabled(!store.validationErrors().isEmpty)
 
-              Button("Stop", role: .destructive) {
+              Button("Stop run", role: .destructive) {
                 Task { await store.stopAgent() }
               }
               .disabled(!isRunning)
 
-              if showLANHint {
-                Text("Tip: If Runner was just installed or updated, iOS may reset its Wireless Data to Off. Re-enable it in Settings if Wi‑Fi access fails.")
-                  .font(.footnote)
-                  .foregroundStyle(.secondary)
-              } else {
-                Text("Tip: If Runner (WebDriverAgentRunner-Runner) was just installed or updated, iOS may reset its Wireless Data to Off. Re-enable it in Settings if Wi‑Fi access fails.")
-                  .font(.footnote)
-                  .foregroundStyle(.secondary)
-              }
+              Text(
+                "Tip: If Runner was just installed or updated, iOS may reset Runner’s Wireless Data permission to Off.\nIf Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner."
+              )
+              .font(.footnote)
+              .foregroundStyle(.secondary)
             },
             label: {
               HStack(spacing: 10) {
                 Text("Run")
                   .font(.headline)
                 Spacer()
-                Text(isRunning ? "Running" : "Stopped")
+                Text(isRunning ? "Running" : "Not running")
                   .foregroundStyle(isRunning ? .green : .secondary)
               }
             }
@@ -202,8 +209,8 @@ private struct RunView: View {
               .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 2) {
-              Text("{{DATE_ZH}} -> \(ConsoleStore.datePlaceholderZH())")
-              Text("{{DATE_EN}} -> \(ConsoleStore.datePlaceholderEN())")
+              Text("{{DATE_ZH}} → \(ConsoleStore.datePlaceholderZH())")
+              Text("{{DATE_EN}} → \(ConsoleStore.datePlaceholderEN())")
             }
             .font(.system(.footnote, design: .monospaced))
             .foregroundStyle(.secondary)
@@ -226,8 +233,8 @@ private struct RunView: View {
         Section {
           DisclosureGroup("Model service", isExpanded: $isModelExpanded) {
             ConfigField(
-              title: "Base URL (OpenAI-compatible)",
-              help: "Required. Examples: Doubao `https://ark.cn-beijing.volces.com/api/v3/responses`; OpenAI `https://api.openai.com/v1`.",
+              title: "Service URL (Base URL, OpenAI-compatible)",
+              help: "Required. Examples:\nDoubao: https://ark.cn-beijing.volces.com/api/v3/responses\nOpenAI: https://api.openai.com/v1",
               placeholder: "https://…",
               text: $store.draft.baseUrl,
               keyboard: .URL
@@ -235,7 +242,7 @@ private struct RunView: View {
 
             ConfigField(
               title: "Model",
-              help: "Required. Example: doubao-seed-1-8-251228.",
+              help: "Required. Example: doubao-seed-1-8-251228",
               placeholder: "doubao-seed-…",
               text: $store.draft.model,
               keyboard: .default
@@ -244,7 +251,7 @@ private struct RunView: View {
             ConfigPicker(
               title: "API Mode",
               help: (store.draft.apiMode == ConsoleStore.Defaults.apiMode)
-                ? "Doubao Seed: use Responses. Most OpenAI-compatible: try Responses first; if unsupported, switch to Chat Completions."
+                ? "Doubao Seed: use Responses. Most OpenAI-compatible services: try Responses first; if unsupported, switch to Chat Completions."
                 : "Use Chat Completions when Responses is unsupported. More compatible, but usually uses more tokens.",
               selection: $store.draft.apiMode,
               options: [
@@ -285,6 +292,7 @@ private struct RunView: View {
             LimitField(
               title: "Max Steps",
               help: "Hard stop after this many actions. Prevents runaway loops.",
+              placeholder: "",
               text: $store.draft.maxSteps,
               keyboard: .numberPad
             )
@@ -292,6 +300,7 @@ private struct RunView: View {
             LimitField(
               title: "Timeout (seconds)",
               help: "Per-step model request timeout. Increase if the model is slow.",
+              placeholder: "",
               text: $store.draft.timeoutSeconds,
               keyboard: .decimalPad
             )
@@ -299,26 +308,28 @@ private struct RunView: View {
             LimitField(
               title: "Step Delay (seconds)",
               help: "Sleep between executed actions. Increase to reduce flakiness.",
+              placeholder: "",
               text: $store.draft.stepDelaySeconds,
               keyboard: .decimalPad
             )
 
-            let tokensTitle: LocalizedStringKey =
-              (store.draft.apiMode == ConsoleStore.Defaults.apiMode) ? "Max Output Tokens" : "Max Completion Tokens"
+            let tokensTitle: LocalizedStringKey = "Per-step max output (Token)"
             let tokensHelp: LocalizedStringKey =
               (store.draft.apiMode == ConsoleStore.Defaults.apiMode)
-              ? "Per-step output cap (Responses: max_output_tokens). Does not limit screenshot/input tokens."
-              : "Per-step output cap (Chat: max_completion_tokens). Does not limit screenshot/input tokens."
+              ? "Per-step output cap (Responses: max_output_tokens). Does not limit screenshot/input Token."
+              : "Per-step output cap (Chat Completions: max_completion_tokens). Does not limit screenshot/input Token."
             LimitField(
               title: tokensTitle,
               help: tokensHelp,
+              placeholder: "",
               text: $store.draft.maxCompletionTokens,
               keyboard: .numberPad
             )
 
             LimitField(
               title: "Reasoning effort (optional)",
-              help: "Optional. Examples: minimal / low / medium / high.",
+              help: "Optional. Only some models support this (e.g. doubao-seed). Leave empty to use the model default. Examples: minimal / low / medium / high.",
+              placeholder: "e.g. medium",
               text: $store.draft.reasoningEffort,
               keyboard: .default
             )
@@ -335,7 +346,7 @@ private struct RunView: View {
             }
 
             Toggle("Half-resolution screenshots", isOn: $store.draft.halfResScreenshot)
-            Text("Downscales screenshots before sending to the model, reducing token usage and often speeding up responses.")
+            Text("Shrinks screenshots by 50% before sending to the model, reducing Token usage and often speeding up responses.")
               .font(.footnote)
               .foregroundStyle(.secondary)
 
@@ -345,7 +356,7 @@ private struct RunView: View {
               .foregroundStyle(.secondary)
 
             Toggle("Annotate screenshots with actions", isOn: $store.annotateStepScreenshots)
-            Text("Overlays Tap/Swipe markers on per-step screenshots in Chat.")
+            Text("Overlays click/swipe markers on per-step screenshots in Chat.")
               .font(.footnote)
               .foregroundStyle(.secondary)
 
@@ -385,16 +396,16 @@ private struct RunView: View {
         }
 
         Section {
-          DisclosureGroup("Runner", isExpanded: $isRunnerExpanded) {
+          DisclosureGroup("Runner (WebDriverAgentRunner-Runner)", isExpanded: $isRunnerExpanded) {
             ConfigField(
-              title: "Runner URL",
-              help: "Where this Console connects to Runner (port 8100). On iPhone, use http://127.0.0.1:8100.",
+              title: "Runner address",
+              help: "The address used to connect to Runner (port 8100). On iPhone, use http://127.0.0.1:8100.",
               placeholder: ConsoleStore.Defaults.wdaURL,
               text: $store.wdaURL,
               keyboard: .URL
             )
 
-            Button("Refresh Status") {
+            Button("Check status") {
               Task { await store.refresh() }
             }
           }
@@ -456,6 +467,8 @@ private struct RunView: View {
       }
       .sheet(isPresented: $isEditingTask) {
         TextEditorSheet(title: "Task", text: $store.draft.task)
+          .onAppear { store.suspendAutoRefresh() }
+          .onDisappear { store.resumeAutoRefresh() }
       }
       .sheet(isPresented: $isEditingSystemPrompt) {
         SystemPromptEditorSheet(
@@ -463,6 +476,8 @@ private struct RunView: View {
           systemPrompt: $store.draft.systemPrompt,
           defaultTemplate: store.status?.config.defaultSystemPrompt ?? ""
         )
+        .onAppear { store.suspendAutoRefresh() }
+        .onDisappear { store.resumeAutoRefresh() }
       }
       .sheet(isPresented: $isImportingConfig) {
         QRCodeImportSheet(isPresented: $isImportingConfig) { raw in
@@ -473,9 +488,13 @@ private struct RunView: View {
             return error.localizedDescription
           }
         }
+        .onAppear { store.suspendAutoRefresh() }
+        .onDisappear { store.resumeAutoRefresh() }
       }
       .sheet(isPresented: $isExportingConfig) {
         QRCodeExportSheet(isPresented: $isExportingConfig)
+          .onAppear { store.suspendAutoRefresh() }
+          .onDisappear { store.resumeAutoRefresh() }
       }
     }
   }
@@ -484,6 +503,7 @@ private struct RunView: View {
 private struct LimitField: View {
   let title: LocalizedStringKey
   let help: LocalizedStringKey
+  let placeholder: LocalizedStringKey
   @Binding var text: String
   let keyboard: UIKeyboardType
 
@@ -492,7 +512,7 @@ private struct LimitField: View {
       Text(title)
         .font(.headline)
 
-      TextField("", text: $text)
+      TextField(placeholder, text: $text)
         .keyboardType(keyboard)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
@@ -509,7 +529,7 @@ private struct LimitField: View {
 
 private struct ConfigField: View {
   let title: LocalizedStringKey
-  let help: LocalizedStringKey
+  let help: String
   let placeholder: String
   @Binding var text: String
   let keyboard: UIKeyboardType
@@ -525,7 +545,7 @@ private struct ConfigField: View {
         .autocorrectionDisabled()
         .font(.system(.body, design: .monospaced))
 
-      Text(help)
+      Text(verbatim: NSLocalizedString(help, comment: ""))
         .font(.footnote)
         .foregroundStyle(.secondary)
     }
@@ -537,7 +557,7 @@ private struct ConfigPicker: View {
   typealias Option = (title: LocalizedStringKey, value: String)
 
   let title: LocalizedStringKey
-  let help: LocalizedStringKey?
+  let help: String?
   @Binding var selection: String
   let options: [Option]
 
@@ -554,7 +574,7 @@ private struct ConfigPicker: View {
       .pickerStyle(.segmented)
 
       if let help {
-        Text(help)
+        Text(verbatim: NSLocalizedString(help, comment: ""))
           .font(.footnote)
           .foregroundStyle(.secondary)
       }
@@ -568,19 +588,30 @@ private struct LogsView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 8) {
-          if let err = store.logsError, !err.isEmpty {
-            Text(String(format: NSLocalizedString("Logs stale: %@", comment: ""), err))
-              .font(.footnote)
-              .foregroundStyle(.red)
-          }
+      Group {
+        if store.logs.isEmpty, (store.logsError ?? "").isEmpty {
+          ContentUnavailableView(
+            NSLocalizedString("No logs yet", comment: ""),
+            systemImage: "doc.plaintext",
+            description: Text(NSLocalizedString("Logs will appear while the agent runs.", comment: ""))
+          )
+          .padding(.horizontal, 20)
+        } else {
+          ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+              if let err = store.logsError, !err.isEmpty {
+                Text(String(format: NSLocalizedString("Logs stale: %@", comment: ""), err))
+                  .font(.footnote)
+                  .foregroundStyle(.red)
+              }
 
-          Text(store.logs.joined(separator: "\n"))
-            .font(.system(.body, design: .monospaced))
+              Text(store.logs.joined(separator: "\n"))
+                .font(.system(.body, design: .monospaced))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+          }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
       }
       .navigationTitle("Logs")
     }
@@ -870,94 +901,112 @@ private struct ChatView: View {
           .padding(.vertical, 8)
         }
 
-		        List(store.chatItems) { item in
-		          VStack(alignment: .leading, spacing: 6) {
-	            HStack {
-	              Text(String(format: NSLocalizedString("Step %d · %@", comment: ""), item.step ?? 0, item.kind))
-	                .font(.headline)
-              if let attempt = item.attempt {
-                Text("(\(attempt))").foregroundStyle(.secondary)
-              }
-              Spacer()
-              if let ts = item.ts {
-                Text(ts).font(.caption).foregroundStyle(.secondary)
-              }
+        if !store.chatItems.isEmpty {
+          Picker("View", selection: $store.chatMode) {
+            ForEach(ConsoleStore.ChatMode.allCases) { m in
+              Text(m.title).tag(m)
             }
+          }
+          .pickerStyle(.segmented)
+          .padding(.horizontal, 16)
+          .padding(.top, 6)
+          .padding(.bottom, 10)
+        }
 
-            if store.chatMode == .rawJSON {
-              Text(item.raw ?? "")
-                .font(.system(.footnote, design: .monospaced))
-                .textSelection(.enabled)
-            } else {
-              if item.kind == "request", item.attempt == nil, let step = item.step {
-                if let img = store.stepScreenshots[step] {
-                  AnnotatedScreenshotCard(
-                    image: img,
-                    annotation: store.annotateStepScreenshots ? store.stepActionAnnotations[step] : nil
-                  )
-                } else if let err = store.stepScreenshotErrors[step], !err.isEmpty {
-                  HStack(alignment: .top, spacing: 10) {
-                    Text(err)
-                      .font(.footnote)
-                      .foregroundStyle(.red)
-                    Spacer()
-                    Button("Retry") {
-                      Task { await store.ensureStepScreenshotLoaded(step: step) }
+        Group {
+          if store.chatItems.isEmpty, (store.chatError ?? "").isEmpty, !isExporting, (exportError ?? "").isEmpty {
+            ContentUnavailableView(
+              NSLocalizedString("No conversation yet", comment: ""),
+              systemImage: "text.bubble",
+              description: Text(NSLocalizedString("Start a run to see steps here.", comment: ""))
+            )
+            .padding(.horizontal, 20)
+          } else {
+            List(store.chatItems) { item in
+              VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                  Text(String(format: NSLocalizedString("Step %d · %@", comment: ""), item.step ?? 0, item.kind))
+                    .font(.headline)
+                  if let attempt = item.attempt {
+                    Text("(\(attempt))").foregroundStyle(.secondary)
+                  }
+                  Spacer()
+                  if let ts = item.ts {
+                    Text(ts).font(.caption).foregroundStyle(.secondary)
+                  }
+                }
+
+                if store.chatMode == .rawJSON {
+                  Text(item.raw ?? "")
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+                } else {
+                  if item.kind == "request", item.attempt == nil, let step = item.step {
+                    if let img = store.stepScreenshots[step] {
+                      AnnotatedScreenshotCard(
+                        image: img,
+                        annotation: store.annotateStepScreenshots ? store.stepActionAnnotations[step] : nil
+                      )
+                    } else if let err = store.stepScreenshotErrors[step], !err.isEmpty {
+                      HStack(alignment: .top, spacing: 10) {
+                        Text(err)
+                          .font(.footnote)
+                          .foregroundStyle(.red)
+                        Spacer()
+                        Button("Retry") {
+                          Task { await store.ensureStepScreenshotLoaded(step: step) }
+                        }
+                      }
+                    } else {
+                      HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Loading screenshot…")
+                          .font(.footnote)
+                          .foregroundStyle(.secondary)
+                        Spacer()
+                      }
+                      .task {
+                        await store.ensureStepScreenshotLoaded(step: step)
+                      }
                     }
                   }
-                } else {
-                  HStack(spacing: 10) {
-                    ProgressView()
-                    Text("Loading screenshot…")
+                  if let text = item.text, !text.isEmpty {
+                    Text(text)
+                      .font(.system(.footnote, design: .monospaced))
+                      .textSelection(.enabled)
+                  }
+                  if let content = item.content, !content.isEmpty {
+                    Text(content)
+                      .font(.system(.footnote, design: .monospaced))
+                      .textSelection(.enabled)
+                  }
+                  if let reasoning = item.reasoning, !reasoning.isEmpty {
+                    Divider()
+                    Text(reasoning)
                       .font(.footnote)
                       .foregroundStyle(.secondary)
-                    Spacer()
-                  }
-                  .task {
-                    await store.ensureStepScreenshotLoaded(step: step)
+                      .textSelection(.enabled)
                   }
                 }
               }
-              if let text = item.text, !text.isEmpty {
-                Text(text)
-                  .font(.system(.footnote, design: .monospaced))
-                  .textSelection(.enabled)
-              }
-              if let content = item.content, !content.isEmpty {
-                Text(content)
-                  .font(.system(.footnote, design: .monospaced))
-                  .textSelection(.enabled)
-              }
-              if let reasoning = item.reasoning, !reasoning.isEmpty {
-                Divider()
-                Text(reasoning)
-                  .font(.footnote)
-                  .foregroundStyle(.secondary)
-                  .textSelection(.enabled)
-              }
+              .padding(.vertical, 4)
             }
           }
-          .padding(.vertical, 4)
         }
-	        .toolbar {
-          ToolbarItem(placement: .navigationBarLeading) {
-            Picker("View", selection: $store.chatMode) {
-              ForEach(ConsoleStore.ChatMode.allCases) { m in
-                Text(m.title).tag(m)
-              }
-            }
-          }
+        .toolbar {
           ToolbarItem(placement: .navigationBarTrailing) {
-            Menu {
+            if !store.chatItems.isEmpty {
+              Menu {
                 Button("Export readable text (.txt)") { exportChat(.messageText) }
                 Button("Export raw JSONL (.jsonl)") { exportChat(.rawJSONL) }
                 Button("Export HTML report (.html)") { exportChat(.htmlReport) }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
-            }
+              } label: {
+                Text("Export")
+              }
               .disabled(isExporting)
+            }
           }
-	        }
+        }
 	      }
 	      .navigationTitle("Chat")
     }
@@ -1216,11 +1265,23 @@ private struct NotesView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        Text(store.status?.notes ?? "")
-          .font(.system(.body, design: .monospaced))
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding()
+      let notes = store.status?.notes ?? ""
+      Group {
+        if notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          ContentUnavailableView(
+            NSLocalizedString("No notes yet", comment: ""),
+            systemImage: "note.text",
+            description: Text(NSLocalizedString("The agent writes here via the Note action.", comment: ""))
+          )
+          .padding(.horizontal, 20)
+        } else {
+          ScrollView {
+            Text(notes)
+              .font(.system(.body, design: .monospaced))
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding()
+          }
+        }
       }
       .navigationTitle("Notes")
     }
