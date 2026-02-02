@@ -1,0 +1,159 @@
+/* UI */
+"Run" = "运行";
+"Logs" = "日志";
+"Chat" = "对话";
+"Notes" = "备注";
+"On‑Device Agent" = "端上 Agent";
+
+"Running" = "运行中";
+"Stopped" = "已停止";
+"Token Usage" = "Token 用量";
+"Wi‑Fi unreachable" = "Wi‑Fi 不可达";
+"Runner (WebDriverAgentRunner-Runner) is reachable on 127.0.0.1 but not on Wi‑Fi (%@). Enable Wireless Data for Runner in iPhone Settings, then reopen Runner." = "Runner（WebDriverAgentRunner-Runner）在 127.0.0.1 可用，但在 Wi‑Fi（%@）不可达。请在 iPhone 设置中为 Runner 开启无线数据，然后重新打开 Runner。";
+"Tip: If Runner (WebDriverAgentRunner-Runner) was just installed or updated, iOS may reset its Wireless Data to Off. Re-enable it in Settings if Wi‑Fi access fails." = "提示：如果 Runner（WebDriverAgentRunner-Runner）刚被安装或更新，iOS 可能会把无线数据权限重置为关闭；若 Wi‑Fi 访问失败，请到设置中重新开启。";
+"Tip: If Runner was just installed or updated, iOS may reset its Wireless Data to Off. Re-enable it in Settings if Wi‑Fi access fails." = "提示：如果 Runner 刚被安装或更新，iOS 可能会把无线数据权限重置为关闭；若 Wi‑Fi 访问失败，请到设置中重新开启。";
+"Re-check" = "重新检测";
+
+"Requests: %d" = "请求数：%d";
+"Input: %d  Output: %d" = "输入：%d  输出：%d";
+"Cached: %d  Total: %d" = "缓存：%d  总计：%d";
+
+"Runner" = "Runner";
+"Refresh Status" = "刷新状态";
+"Model service" = "模型服务";
+"Runner URL" = "Runner URL";
+"Where this Console connects to Runner (port 8100). On iPhone, use http://127.0.0.1:8100." = "Console 连接 Runner 的地址（8100 端口）。在 iPhone 上通常使用 http://127.0.0.1:8100。";
+"Required. Examples: Doubao `https://ark.cn-beijing.volces.com/api/v3/responses`; OpenAI `https://api.openai.com/v1`." = "必填。示例：豆包 `https://ark.cn-beijing.volces.com/api/v3/responses`；OpenAI `https://api.openai.com/v1`。";
+"Required. Example: doubao-seed-1-8-251228." = "必填。示例：doubao-seed-1-8-251228。";
+"Optional if already set on device. Leave empty to keep the existing key." = "如果已在设备上设置过可留空；留空会保留设备上的现有 key。";
+"Doubao Seed: use Responses. Most OpenAI-compatible: try Responses first; if unsupported, switch to Chat Completions." = "豆包 Seed：推荐用 Responses。大多数 OpenAI-compatible：先试 Responses，不支持再切换 Chat Completions。";
+"Use Chat Completions when Responses is unsupported. More compatible, but usually uses more tokens." = "当服务不支持 Responses 时使用 Chat Completions。兼容性更好，但通常更耗 token。";
+"Per-step output cap (Responses: max_output_tokens). Does not limit screenshot/input tokens." = "单步输出上限（Responses：max_output_tokens）。不限制截图/输入 tokens。";
+"Per-step output cap (Chat: max_completion_tokens). Does not limit screenshot/input tokens." = "单步输出上限（Chat：max_completion_tokens）。不限制截图/输入 tokens。";
+
+"Model" = "模型";
+"Base URL (OpenAI-compatible)" = "Base URL（OpenAI 兼容）";
+"API Mode" = "API 模式";
+"Responses" = "Responses";
+"Chat Completions" = "Chat Completions";
+
+"API Key" = "API Key";
+"(set on device)" = "（已在设备上设置）";
+"Show API key" = "显示 API key";
+"Remember API key on device" = "在设备上记住 API key";
+
+"Task" = "任务";
+"Edit Task" = "编辑任务";
+
+"Limits & stability" = "限制与稳定性";
+"Max Steps" = "最大步数";
+"Timeout (seconds)" = "超时（秒）";
+"Step Delay (seconds)" = "步间延迟（秒）";
+"Max Output Tokens" = "最大输出 tokens";
+"Max Completion Tokens" = "最大 completion tokens";
+
+"Hard stop after this many actions. Prevents runaway loops." = "达到该步数后强制停止，避免任务失控循环。";
+"Per-step model request timeout. Increase if the model is slow." = "单步模型请求超时；模型较慢时可调大。";
+"Sleep between executed actions. Increase to reduce flakiness." = "每步动作后等待时间；调大可降低不稳定性。";
+"Responses API: max_output_tokens. Larger lets the model think/plan longer." = "Responses API：max_output_tokens。更大可让模型思考/规划更久。";
+"Chat Completions: max_completion_tokens. Larger lets the model think/plan longer." = "Chat Completions：max_completion_tokens。更大可让模型思考/规划更久。";
+"Optional. Examples: minimal / low / medium / high." = "可选。示例：minimal / low / medium / high。";
+
+"System Prompt" = "系统提示词";
+"Use custom system prompt" = "使用自定义系统提示词";
+"Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):" = "自定义系统提示词仅在勾选后生效。日期占位符（运行时替换）：";
+"Edit System Prompt" = "编辑系统提示词";
+"Restore Default Template" = "恢复默认模板";
+
+"Advanced (optional)" = "高级（可选）";
+"Reset" = "重置";
+"Reset clears local runtime data (logs/chat/screenshots/Notes/token usage); Factory Reset also clears saved settings and the remembered API key; neither affects your model service." = "重置会清理本机运行数据（日志/对话/截图/备注/token）；恢复默认设置还会清空已保存的设置与已记住的 API Key；两者都不会影响你的模型服务。";
+"Reasoning effort (optional)" = "思考强度（可选）";
+"Enable Session Cache (Doubao Seed)" = "启用会话缓存（豆包 Seed）";
+"Responses only. Enables session caching for doubao-seed models to reduce tokens and improve stability." = "仅限 Responses。为 doubao-seed 模型启用会话缓存，以减少 token 用量并提升稳定性。";
+"Half-resolution screenshots" = "半分辨率截图";
+"Downscales screenshots before sending to the model, reducing token usage and often speeding up responses." = "发送给模型前将截图降采样，以减少 token 用量，并通常能加快响应。";
+"Use W3C actions for swipe" = "Swipe 使用 W3C actions";
+"Recommended for games: makes swipe closer to a real finger gesture." = "推荐用于游戏：让 Swipe 更接近真实手指手势。";
+"Annotate screenshots with actions" = "在截图上标注动作";
+"Overlays Tap/Swipe markers on per-step screenshots in Chat." = "在对话中的每步截图上叠加 Tap/Swipe 等动作标记。";
+"Debug raw conversation" = "调试：记录原始对话";
+"Stores per-step API request/response JSON (images are placeholders). May contain sensitive info." = "记录每步 API 请求/响应 JSON（图片会用占位符）。可能包含敏感信息。";
+"Insecure: skip TLS verify (model)" = "不安全：跳过 TLS 校验（模型）";
+"Allows HTTPS endpoints with invalid certificates. Debug only." = "允许 HTTPS 端点使用无效证书（仅调试）。";
+
+"Validation" = "校验";
+"Import Config (QR)" = "导入配置（二维码）";
+"Scans a QR code and shows a review step before applying changes." = "扫描二维码后会先让你预览并确认，再应用变更。";
+"Export Config (QR)" = "导出配置（二维码）";
+"Save Config" = "保存配置";
+"Exports the current config as a QR code image for sharing or backup." = "将当前配置导出为二维码图片，便于分享或备份。";
+"Saves the current config to Runner (persistent on device)." = "将当前配置保存到 Runner（设备端持久化）。";
+"Start" = "开始";
+"Stop" = "停止";
+"Reset Runtime" = "重置运行态";
+"Stops the agent and clears logs/chat/screenshots/notes/token usage. Keeps saved config." = "停止 Agent 并清空日志/对话/截图/备注/token 用量，但保留已保存的配置。";
+"Factory Reset" = "恢复默认设置";
+"Stops the agent, clears runtime, and restores Runner config to defaults (forgets API key, custom prompt, and other saved settings)." = "停止 Agent、清空运行态，并将 Runner 配置恢复为默认值（会忘记 API key、自定义提示词等已保存设置）。";
+"Done" = "完成";
+"Cancel" = "取消";
+
+"Scan a QR code containing a JSON config object. You will review and confirm before applying." = "扫描包含 JSON 配置对象的二维码。应用前会先让你预览并确认。";
+"Import Image" = "导入图片";
+"Import File" = "导入文件";
+"Scan Again" = "重新扫描";
+"Review & edit" = "预览并编辑";
+"Validation errors" = "校验错误";
+"Back to Scan" = "返回扫描";
+"Apply" = "应用";
+
+"Export Config (QR)" = "导出配置（二维码）";
+"This QR encodes the current config as JSON (api_key is excluded)." = "此二维码编码了当前配置（JSON），不包含 api_key。";
+"Share QR Image" = "分享二维码图片";
+"JSON payload" = "JSON 内容";
+
+"Mode" = "模式";
+"View" = "查看";
+"Visual" = "图文视图";
+"Raw JSON" = "原始 JSON";
+"Export" = "导出";
+"Export readable text (.txt)" = "导出可读文本（.txt）";
+"Export raw JSONL (.jsonl)" = "导出原始 JSONL（.jsonl）";
+"Export HTML report (.html)" = "导出 HTML 报告（.html）";
+"Exporting…" = "正在导出…";
+"Preparing screenshots…" = "正在准备截图…";
+"Preparing screenshots… %d/%d" = "正在准备截图… %d/%d";
+"Building HTML…" = "正在生成 HTML…";
+"Retry" = "重试";
+"Loading screenshot…" = "正在加载截图…";
+
+/* Dynamic / errors */
+"Connection error: %@" = "连接错误：%@";
+"Execution error: %@" = "执行错误：%@";
+"Logs stale: %@" = "日志未更新：%@";
+"Chat stale: %@" = "对话未更新：%@";
+
+"Camera unavailable" = "摄像头不可用";
+"Camera permission denied" = "摄像头权限被拒绝";
+
+"QR content is not valid UTF-8" = "二维码内容不是有效的 UTF-8";
+"Invalid JSON: %@" = "JSON 无效：%@";
+"JSON root must be an object" = "JSON 根节点必须是对象";
+"Unknown config key: %@" = "未知配置项：%@";
+"Invalid value for %@: %@" = "%@ 的值无效：%@";
+"Invalid value for %@: must be a string" = "%@ 的值无效：必须为字符串";
+"Invalid value for %@: must be a string or null" = "%@ 的值无效：必须为字符串或 null";
+"Invalid value for %@: must be a boolean" = "%@ 的值无效：必须为布尔值";
+"Invalid value for %@: must be an integer" = "%@ 的值无效：必须为整数";
+"Invalid value for %@: must be a number" = "%@ 的值无效：必须为数字";
+"Invalid value for %@: must be > 0" = "%@ 的值无效：必须大于 0";
+"Invalid value for %@: unsupported api_mode '%@'" = "%@ 的值无效：不支持的 api_mode '%@'";
+
+"Step %d · %@" = "第 %d 步 · %@";
+"Step %d %@" = "第 %d 步 %@";
+"(attempt %d)" = "（第 %d 次尝试）";
+
+"Cannot load image" = "无法加载图片";
+"Invalid image" = "图片无效";
+"No QR code found in image" = "图片中未找到二维码";
+"Failed to generate QR image (payload may be too large)." = "生成二维码失败（内容可能过大）。";

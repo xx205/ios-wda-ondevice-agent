@@ -21,7 +21,10 @@
 #import <WebDriverAgentLib/FBRoute.h>
 #import <WebDriverAgentLib/FBRouteRequest.h>
 #import <WebDriverAgentLib/XCUIApplication+FBHelpers.h>
+#import "XCUIApplication+FBTouchAction.h"
 #import <WebDriverAgentLib/XCUIElement+FBTyping.h>
+
+#import <ImageIO/ImageIO.h>
 
 #import "RouteResponse.h"
 
@@ -31,11 +34,12 @@ static NSString *const kOnDeviceAgentModelKey = @"ONDEVICE_AGENT_MODEL";
 static NSString *const kOnDeviceAgentApiKeyKey = @"ONDEVICE_AGENT_API_KEY";
 static NSString *const kOnDeviceAgentApiModeKey = @"ONDEVICE_AGENT_API_MODE";
 static NSString *const kOnDeviceAgentApiModeChatCompletions = @"chat_completions";
-static NSString *const kOnDeviceAgentApiModeResponsesStateful = @"responses_stateful";
+static NSString *const kOnDeviceAgentApiModeResponses = @"responses";
 static NSString *const kOnDeviceAgentErrorKindKey = @"ondevice_agent_error_kind";
 static NSString *const kOnDeviceAgentErrorKindLaunchNotInMap = @"launch_not_in_map";
 static NSString *const kOnDeviceAgentErrorKindInvalidParams = @"invalid_params";
 static NSString *const kOnDeviceAgentMaxCompletionTokensKey = @"ONDEVICE_AGENT_MAX_COMPLETION_TOKENS";
+static NSString *const kOnDeviceAgentHalfResScreenshotKey = @"ONDEVICE_AGENT_HALF_RES_SCREENSHOT";
 static NSString *const kOnDeviceAgentUseCustomSystemPromptKey = @"ONDEVICE_AGENT_USE_CUSTOM_SYSTEM_PROMPT";
 static NSString *const kOnDeviceAgentCustomSystemPromptKey = @"ONDEVICE_AGENT_CUSTOM_SYSTEM_PROMPT";
 static NSString *const kOnDeviceAgentMaxStepsKey = @"ONDEVICE_AGENT_MAX_STEPS";
@@ -46,6 +50,7 @@ static NSString *const kOnDeviceAgentRememberApiKeyKey = @"ONDEVICE_AGENT_REMEMB
 static NSString *const kOnDeviceAgentDebugLogRawAssistantKey = @"ONDEVICE_AGENT_DEBUG_LOG_RAW_ASSISTANT";
 static NSString *const kOnDeviceAgentReasoningEffortKey = @"ONDEVICE_AGENT_REASONING_EFFORT";
 static NSString *const kOnDeviceAgentDoubaoSeedEnableSessionCacheKey = @"ONDEVICE_AGENT_DOUBAO_SEED_ENABLE_SESSION_CACHE";
+static NSString *const kOnDeviceAgentUseW3CActionsForSwipeKey = @"ONDEVICE_AGENT_USE_W3C_ACTIONS_FOR_SWIPE";
 
 static NSString *const kOnDeviceAgentDefaultBaseURL = @"https://ark.cn-beijing.volces.com/api/v3/responses";
 static NSString *const kOnDeviceAgentDefaultModel = @"doubao-seed-1-8-251228";
@@ -57,9 +62,109 @@ static double const kOnDeviceAgentDefaultStepDelaySeconds = 0.5;
 
 static NSInteger const kOnDeviceAgentRecoverableFailureLimit = 2;
 static NSUInteger const kOnDeviceAgentMaxLogLines = 300;
-static NSUInteger const kOnDeviceAgentMaxChatItems = 120;
 static NSUInteger const kOnDeviceAgentMaxLogLineChars = 300;
 static NSInteger const kOnDeviceAgentDefaultRefreshIntervalMs = 1500;
+
+static void OnDeviceAgentTriggerWirelessDataPromptIfNeeded(void)
+{
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    NSURL *url = [NSURL URLWithString:@"https://www.apple.com/library/test/success.html"];
+    if (url == nil) {
+      return;
+    }
+
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    cfg.timeoutIntervalForRequest = 1.5;
+    cfg.timeoutIntervalForResource = 1.5;
+    cfg.waitsForConnectivity = NO;
+
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(__unused NSData *data, __unused NSURLResponse *resp, __unused NSError *err) {
+      [session finishTasksAndInvalidate];
+    }];
+    [task resume];
+  });
+}
+
+static NSData *OnDeviceAgentDownscalePNGHalf(NSData *png)
+{
+  if (![png isKindOfClass:NSData.class] || png.length == 0) {
+    return png;
+  }
+
+  CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)png, NULL);
+  if (src == NULL) {
+    return png;
+  }
+  CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, NULL);
+  CFRelease(src);
+  if (image == NULL) {
+    return png;
+  }
+
+  size_t w = CGImageGetWidth(image);
+  size_t h = CGImageGetHeight(image);
+  if (w < 4 || h < 4) {
+    CGImageRelease(image);
+    return png;
+  }
+
+  size_t nw = w / 2;
+  size_t nh = h / 2;
+  if (nw < 2 || nh < 2) {
+    CGImageRelease(image);
+    return png;
+  }
+
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+  if (cs == NULL) {
+    CGImageRelease(image);
+    return png;
+  }
+  CGContextRef ctx = CGBitmapContextCreate(NULL, nw, nh, 8, 0, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGColorSpaceRelease(cs);
+  if (ctx == NULL) {
+    CGImageRelease(image);
+    return png;
+  }
+
+  CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+  CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)nw, (CGFloat)nh), image);
+  CGImageRelease(image);
+
+  CGImageRef scaled = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  if (scaled == NULL) {
+    return png;
+  }
+
+  CFMutableDataRef outData = CFDataCreateMutable(kCFAllocatorDefault, 0);
+  if (outData == NULL) {
+    CGImageRelease(scaled);
+    return png;
+  }
+
+  CGImageDestinationRef dest = CGImageDestinationCreateWithData(outData, CFSTR("public.png"), 1, NULL);
+  if (dest == NULL) {
+    CGImageRelease(scaled);
+    CFRelease(outData);
+    return png;
+  }
+
+  CGImageDestinationAddImage(dest, scaled, NULL);
+  CGImageRelease(scaled);
+  BOOL ok = CGImageDestinationFinalize(dest);
+  CFRelease(dest);
+  if (!ok) {
+    CFRelease(outData);
+    return png;
+  }
+  NSData *out = [(__bridge NSData *)outData copy];
+  CFRelease(outData);
+  return (out.length > 0) ? out : png;
+}
 
 static BOOL OnDeviceAgentParseBool(id value, BOOL defaultValue)
 {
@@ -109,6 +214,24 @@ static double OnDeviceAgentParseDouble(id value, double defaultValue)
   return [s doubleValue];
 }
 
+static NSInteger OnDeviceAgentMaxChatSteps(NSDictionary *config)
+{
+  NSInteger maxSteps = OnDeviceAgentParseInt(config[kOnDeviceAgentMaxStepsKey], kOnDeviceAgentDefaultMaxSteps);
+  if (maxSteps <= 0) {
+    maxSteps = kOnDeviceAgentDefaultMaxSteps;
+  }
+  return maxSteps;
+}
+
+static NSUInteger OnDeviceAgentMaxChatItemsHardLimit(NSDictionary *config)
+{
+  NSInteger maxSteps = OnDeviceAgentMaxChatSteps(config);
+  // Typical is 2 items/step (request + response). In error cases we may log more (fix_request/fix_response).
+  // Use a generous multiplier to keep the whole run while still bounding memory usage.
+  NSUInteger hard = (NSUInteger)MAX(200, maxSteps * 8);
+  return hard;
+}
+
 static void OnDeviceAgentSyncOnMain(dispatch_block_t block)
 {
   if (block == nil) {
@@ -151,6 +274,70 @@ static BOOL OnDeviceAgentParsePoint01From1000Array(id value, double *outX, doubl
     *outY = y1000 / 1000.0;
   }
   return YES;
+}
+
+static double OnDeviceAgentClampDouble(double v, double minV, double maxV)
+{
+  if (v < minV) {
+    return minV;
+  }
+  if (v > maxV) {
+    return maxV;
+  }
+  return v;
+}
+
+static NSArray *OnDeviceAgentBuildW3CSwipeActions(XCUIApplication *application,
+                                                 double startX01,
+                                                 double startY01,
+                                                 double endX01,
+                                                 double endY01,
+                                                 NSInteger durationMs,
+                                                 NSInteger holdMs)
+{
+  CGSize viewport = application.frame.size;
+  CGFloat w = viewport.width;
+  CGFloat h = viewport.height;
+  if (w < 1.0 || h < 1.0) {
+    // Fallback: assume iPhone portrait points; better than producing invalid actions.
+    w = 390.0;
+    h = 844.0;
+  }
+
+  double sx = OnDeviceAgentClampDouble(startX01, 0.0, 1.0) * (double)w;
+  double sy = OnDeviceAgentClampDouble(startY01, 0.0, 1.0) * (double)h;
+  double ex = OnDeviceAgentClampDouble(endX01, 0.0, 1.0) * (double)w;
+  double ey = OnDeviceAgentClampDouble(endY01, 0.0, 1.0) * (double)h;
+
+  NSInteger moveMs = durationMs;
+  if (moveMs <= 0) {
+    moveMs = 250;
+  }
+  if (moveMs > 5000) {
+    moveMs = 5000;
+  }
+  NSInteger pauseMs = holdMs;
+  if (pauseMs < 0) {
+    pauseMs = 0;
+  }
+  if (pauseMs > 2000) {
+    pauseMs = 2000;
+  }
+
+  return @[
+    @{
+      @"type": @"pointer",
+      @"id": @"finger1",
+      @"parameters": @{@"pointerType": @"touch"},
+      @"actions": @[
+        @{@"type": @"pointerMove", @"duration": @0, @"origin": @"viewport", @"x": @(sx), @"y": @(sy)},
+        @{@"type": @"pointerDown", @"button": @0},
+        @{@"type": @"pause", @"duration": @(pauseMs)},
+        @{@"type": @"pointerMove", @"duration": @(moveMs), @"origin": @"viewport", @"x": @(ex), @"y": @(ey)},
+        @{@"type": @"pointerUp", @"button": @0},
+      ],
+    },
+  ];
 }
 
 static NSString *OnDeviceAgentStringOrEmpty(id value)
@@ -214,12 +401,6 @@ static NSDictionary *OnDeviceAgentSanitizeMessageForChat(id msgObj)
   NSDictionary *msg = (NSDictionary *)msgObj;
   NSMutableDictionary *m = [msg mutableCopy];
 
-  NSString *role = [m[@"role"] isKindOfClass:NSString.class] ? (NSString *)m[@"role"] : @"";
-  if ([role isEqualToString:@"system"]) {
-    m[@"content"] = @"<system prompt omitted>";
-    return m.copy;
-  }
-
   id content = m[@"content"];
   if ([content isKindOfClass:NSArray.class]) {
     NSMutableArray *parts = [NSMutableArray array];
@@ -255,9 +436,6 @@ static NSDictionary *OnDeviceAgentSanitizeResponsesObjectForChat(id obj)
     return @{};
   }
   NSMutableDictionary *out = [((NSDictionary *)obj) mutableCopy];
-  if ([out[@"instructions"] isKindOfClass:NSString.class]) {
-    out[@"instructions"] = @"<system prompt omitted>";
-  }
   id input = out[@"input"];
   if ([input isKindOfClass:NSArray.class]) {
     NSMutableArray *items = [NSMutableArray array];
@@ -339,15 +517,11 @@ static NSArray<NSDictionary *> *OnDeviceAgentSanitizeResponsesInputForRaw(NSArra
     if (![itemObj isKindOfClass:NSDictionary.class]) {
       continue;
     }
-    NSDictionary *item = (NSDictionary *)itemObj;
-    NSMutableDictionary *m = [item mutableCopy];
-    NSString *role = [m[@"role"] isKindOfClass:NSString.class] ? (NSString *)m[@"role"] : @"";
+	    NSDictionary *item = (NSDictionary *)itemObj;
+	    NSMutableDictionary *m = [item mutableCopy];
 
-    id content = m[@"content"];
+	    id content = m[@"content"];
     if ([content isKindOfClass:NSString.class]) {
-      if ([role isEqualToString:@"developer"] || [role isEqualToString:@"system"]) {
-        m[@"content"] = @"<system prompt omitted>";
-      }
       [items addObject:m.copy];
       continue;
     }
@@ -373,12 +547,6 @@ static NSArray<NSDictionary *> *OnDeviceAgentSanitizeResponsesInputForRaw(NSArra
           NSMutableDictionary *iu = [((NSDictionary *)imageUrlObj) mutableCopy];
           iu[@"url"] = @"data:image/png;base64,<omitted>";
           p[@"image_url"] = iu.copy;
-        }
-      }
-
-      if ([role isEqualToString:@"developer"] || [role isEqualToString:@"system"]) {
-        if ([lower isEqualToString:@"input_text"] || [lower isEqualToString:@"text"]) {
-          p[@"text"] = @"<system prompt omitted>";
         }
       }
 
@@ -496,6 +664,21 @@ static NSString *OnDeviceAgentCollapseSpaces(NSString *s)
 static NSString *OnDeviceAgentNormalizeReasoningEffort(NSString *raw)
 {
   return OnDeviceAgentTrim(raw ?: @"");
+}
+
+static NSString *OnDeviceAgentNormalizeApiMode(NSString *raw)
+{
+  NSString *s = OnDeviceAgentTrim(raw ?: @"");
+  if (s.length == 0) {
+    return @"";
+  }
+  if ([s isEqualToString:kOnDeviceAgentApiModeChatCompletions]) {
+    return s;
+  }
+  if ([s isEqualToString:kOnDeviceAgentApiModeResponses]) {
+    return s;
+  }
+  return @"";
 }
 
 static NSString *OnDeviceAgentNormalizeActionName(NSString *raw)
@@ -663,6 +846,7 @@ static NSString *OnDeviceAgentDefaultSystemPromptTemplate(void)
     @"- 坐标为相对坐标：左上角 (0,0)，右下角 (1000,1000)。\n"
     @"- Tap/Double Tap/Long Press 使用 action.params.element:[x,y]。\n"
     @"- Swipe 使用 action.params.start:[x1,y1] 与 action.params.end:[x2,y2]。\n"
+    @"- 如果 Swipe 看起来没生效，可以尝试将结束点相对延伸 10% 左右，以达到被操作 App 的 Swipe 操作判定条件。\n"
     @"\n";
 
   static NSString *const kOnDeviceAgentSystemPromptActions =
@@ -680,7 +864,7 @@ static NSString *OnDeviceAgentDefaultSystemPromptTemplate(void)
     @"- Type：向当前聚焦输入框输入文本（会自动清空原内容）\n"
     @"  {\"action\":{\"name\":\"Type\",\"params\":{\"text\":\"一段文本\"}}}\n"
     @"- Swipe：滑动\n"
-    @"  {\"action\":{\"name\":\"Swipe\",\"params\":{\"start\":[x1,y1],\"end\":[x2,y2],\"seconds\":0.3}}}\n"
+    @"  {\"action\":{\"name\":\"Swipe\",\"params\":{\"start\":[x1,y1],\"end\":[x2,y2],\"seconds\":1.0}}}\n"
     @"- Back：返回/关闭（iOS 手势）\n"
     @"  {\"action\":{\"name\":\"Back\",\"params\":{}}}\n"
     @"- Home：回到桌面\n"
@@ -1061,6 +1245,7 @@ static BOOL OnDeviceAgentWaitForActiveBundleId(NSString *bundleId, NSTimeInterva
 typedef void (^OnDeviceAgentLogBlock)(NSString *line);
 typedef void (^OnDeviceAgentChatBlock)(NSDictionary *item);
 typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
+typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 
 @interface OnDeviceAgent : NSObject <NSURLSessionDelegate>
 @property (atomic, assign) BOOL stopRequested;
@@ -1068,17 +1253,24 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 @property (nonatomic, copy) OnDeviceAgentLogBlock log;
 @property (nonatomic, copy) OnDeviceAgentChatBlock chat;
 @property (nonatomic, copy) OnDeviceAgentFinishBlock finish;
+@property (nonatomic, copy) OnDeviceAgentScreenshotBlock screenshot;
 @property (nonatomic, strong) NSURLSession *session;
 @property (atomic, strong) NSURLSessionTask *inflightTask;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *context;
 @property (nonatomic, copy) NSString *previousResponseId;
 @property (nonatomic, copy) NSArray<NSDictionary *> *planChecklist;
 @property (atomic, copy) NSString *workingNote;
+
+@property (atomic, assign) long long usageRequests;
+@property (atomic, assign) long long usageInputTokens;
+@property (atomic, assign) long long usageOutputTokens;
+@property (atomic, assign) long long usageCachedTokens;
+@property (atomic, assign) long long usageTotalTokens;
 @end
 
 @implementation OnDeviceAgent
 
-- (instancetype)initWithConfig:(NSDictionary *)config log:(OnDeviceAgentLogBlock)log chat:(OnDeviceAgentChatBlock)chat finish:(OnDeviceAgentFinishBlock)finish
+- (instancetype)initWithConfig:(NSDictionary *)config log:(OnDeviceAgentLogBlock)log chat:(OnDeviceAgentChatBlock)chat screenshot:(OnDeviceAgentScreenshotBlock)screenshot finish:(OnDeviceAgentFinishBlock)finish
 {
   self = [super init];
   if (!self) {
@@ -1087,6 +1279,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   _config = [config copy] ?: @{};
   _log = [log copy];
   _chat = [chat copy];
+  _screenshot = [screenshot copy];
   _finish = [finish copy];
   _stopRequested = NO;
   _planChecklist = @[];
@@ -1114,6 +1307,86 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   if (self.chat) {
     self.chat(item ?: @{} );
   }
+}
+
+static long long OnDeviceAgentLL(id v)
+{
+  if ([v isKindOfClass:NSNumber.class]) {
+    return [((NSNumber *)v) longLongValue];
+  }
+  if ([v isKindOfClass:NSString.class]) {
+    NSString *s = OnDeviceAgentTrim((NSString *)v);
+    if (s.length == 0) {
+      return 0;
+    }
+    return [s longLongValue];
+  }
+  return 0;
+}
+
+- (NSDictionary *)tokenUsageSnapshot
+{
+  return @{
+    @"requests": @(self.usageRequests),
+    @"input_tokens": @(self.usageInputTokens),
+    @"output_tokens": @(self.usageOutputTokens),
+    @"cached_tokens": @(self.usageCachedTokens),
+    @"total_tokens": @(self.usageTotalTokens),
+  };
+}
+
+- (void)resetTokenUsage
+{
+  self.usageRequests = 0;
+  self.usageInputTokens = 0;
+  self.usageOutputTokens = 0;
+  self.usageCachedTokens = 0;
+  self.usageTotalTokens = 0;
+}
+
+- (NSDictionary *)accumulateTokenUsageFromResponse:(NSDictionary *)resp
+{
+  if (![resp isKindOfClass:NSDictionary.class]) {
+    return @{};
+  }
+  NSDictionary *usage = [resp[@"usage"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)resp[@"usage"] : nil;
+  if (usage.count == 0) {
+    return @{};
+  }
+
+  long long input = OnDeviceAgentLL(usage[@"prompt_tokens"]);
+  if (input == 0) {
+    input = OnDeviceAgentLL(usage[@"input_tokens"]);
+  }
+  long long output = OnDeviceAgentLL(usage[@"completion_tokens"]);
+  if (output == 0) {
+    output = OnDeviceAgentLL(usage[@"output_tokens"]);
+  }
+  long long total = OnDeviceAgentLL(usage[@"total_tokens"]);
+  if (total == 0 && (input > 0 || output > 0)) {
+    total = input + output;
+  }
+
+  long long cached = 0;
+  NSDictionary *promptDetails = [usage[@"prompt_tokens_details"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)usage[@"prompt_tokens_details"] : nil;
+  NSDictionary *inputDetails = [usage[@"input_tokens_details"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)usage[@"input_tokens_details"] : nil;
+  NSDictionary *details = (promptDetails.count > 0) ? promptDetails : inputDetails;
+  if (details.count > 0) {
+    cached = OnDeviceAgentLL(details[@"cached_tokens"]);
+  }
+
+  self.usageRequests += 1;
+  self.usageInputTokens += input;
+  self.usageOutputTokens += output;
+  self.usageCachedTokens += cached;
+  self.usageTotalTokens += total;
+
+  return @{
+    @"input_tokens": @(input),
+    @"output_tokens": @(output),
+    @"cached_tokens": @(cached),
+    @"total_tokens": @(total),
+  };
 }
 
 - (NSString *)buildSystemPrompt
@@ -1981,10 +2254,36 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
           return;
         }
 
-        double seconds = OnDeviceAgentParseDouble(params[@"seconds"], 0.3);
+        BOOL useW3CSwipe = OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseW3CActionsForSwipeKey], YES);
+        NSInteger durationMs = OnDeviceAgentParseInt(params[@"duration_ms"], 0);
+        if (durationMs <= 0) {
+          double seconds = OnDeviceAgentParseDouble(params[@"seconds"], 0.0);
+          if (seconds > 0.0) {
+            durationMs = (NSInteger)((seconds * 1000.0) + 0.5);
+          }
+        }
+        NSInteger holdMs = OnDeviceAgentParseInt(params[@"hold_ms"], 0);
+
+        if (useW3CSwipe) {
+          NSError *w3cErr = nil;
+          NSArray *w3c = OnDeviceAgentBuildW3CSwipeActions(active, sx, sy, ex, ey, durationMs, holdMs);
+          if ([active fb_performW3CActions:w3c elementCache:nil error:&w3cErr]) {
+            return;
+          }
+          [self emit:[NSString stringWithFormat:@"[AGENT] swipe(w3c) failed: %@", w3cErr.localizedDescription ?: @"unknown"]];
+        }
+
+        // Fallback: XCUITest drag. Note this is "press then drag" semantics, not a true flick.
+        double pressSeconds = OnDeviceAgentParseDouble(params[@"press_seconds"], 0.0);
+        if (pressSeconds <= 0.0) {
+          pressSeconds = 0.1;
+        }
+        if (pressSeconds > 3.0) {
+          pressSeconds = 3.0;
+        }
         XCUICoordinate *start = [active coordinateWithNormalizedOffset:CGVectorMake(sx, sy)];
         XCUICoordinate *end = [active coordinateWithNormalizedOffset:CGVectorMake(ex, ey)];
-        [start pressForDuration:seconds thenDragToCoordinate:end];
+        [start pressForDuration:pressSeconds thenDragToCoordinate:end];
         return;
       }
 
@@ -2014,11 +2313,11 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   double stepDelay = OnDeviceAgentParseDouble(self.config[kOnDeviceAgentStepDelaySecondsKey], kOnDeviceAgentDefaultStepDelaySeconds);
   NSInteger consecutiveRecoverableFailures = 0;
   NSString *lastRecoverableFailureText = @"";
-  NSString *apiMode = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiModeKey]));
+  NSString *apiMode = OnDeviceAgentNormalizeApiMode(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiModeKey]));
   if (apiMode.length == 0) {
-    apiMode = kOnDeviceAgentApiModeResponsesStateful;
+    apiMode = kOnDeviceAgentApiModeResponses;
   }
-  BOOL useResponses = [apiMode isEqualToString:kOnDeviceAgentApiModeResponsesStateful];
+  BOOL useResponses = [apiMode isEqualToString:kOnDeviceAgentApiModeResponses];
 
   [self emit:[NSString stringWithFormat:@"[AGENT] Starting (maxSteps=%ld)", (long)maxSteps]];
   [self emit:[NSString stringWithFormat:@"[AGENT] Task: %@", task]];
@@ -2027,6 +2326,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   self.previousResponseId = @"";
   self.planChecklist = @[];
   self.workingNote = @"";
+  [self resetTokenUsage];
   NSString *systemTemplate = [self buildSystemPrompt] ?: @"";
   BOOL useCustom = OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseCustomSystemPromptKey], NO);
   if (useCustom) {
@@ -2039,22 +2339,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
     if (!useResponses) {
       [self.context addObject:@{@"role": @"system", @"content": renderedSystemPrompt}];
     }
-    BOOL captureRawConversation = OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], YES);
-    if (self.chat) {
-      NSMutableDictionary *chatItem = [NSMutableDictionary dictionary];
-      chatItem[@"step"] = @0;
-      chatItem[@"kind"] = @"system";
-      chatItem[@"content"] = @"<system prompt omitted>";
-      if (captureRawConversation) {
-        NSDictionary *msg = useResponses ? @{@"role": @"developer", @"content": @"<system prompt omitted>"} : @{@"role": @"system", @"content": renderedSystemPrompt};
-        if (useResponses) {
-          chatItem[@"raw"] = OnDeviceAgentJSONStringFromObject(@{@"message": msg});
-        } else {
-          chatItem[@"raw"] = OnDeviceAgentJSONStringFromObject(@{@"message": OnDeviceAgentSanitizeMessageForChat(msg)});
-        }
-      }
-      [self emitChat:chatItem.copy];
-    }
+  BOOL captureRawConversation = OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], YES);
 
   for (NSInteger step = 0; step < maxSteps; step++) {
     if (self.stopRequested) {
@@ -2072,6 +2357,12 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
         self.finish(NO, @"Failed to capture screenshot");
       }
       return;
+      }
+      if (OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], NO)) {
+        png = OnDeviceAgentDownscalePNGHalf(png);
+      }
+      if (self.screenshot) {
+        self.screenshot(step, png);
       }
       NSString *b64 = [png base64EncodedStringWithOptions:0];
       NSString *imageDataURL = [NSString stringWithFormat:@"data:image/png;base64,%@", b64 ?: @""];
@@ -2177,6 +2468,21 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 
     NSString *assistantContent = useResponses ? ([self contentFromResponsesResponse:resp] ?: @"") : ([self contentFromOpenAIResponse:resp] ?: @"");
     NSString *assistantReasoning = useResponses ? [self reasoningFromResponsesResponse:resp] : [self reasoningFromOpenAIResponse:resp];
+    NSDictionary *deltaUsage = [self accumulateTokenUsageFromResponse:resp];
+    if (deltaUsage.count > 0) {
+      NSDictionary *tot = [self tokenUsageSnapshot];
+      [self emit:[NSString stringWithFormat:
+        @"[TOKENS] req=%@ (+in=%@, +out=%@, +cached=%@, +total=%@) cum(in=%@, out=%@, cached=%@, total=%@)",
+        tot[@"requests"] ?: @0,
+        deltaUsage[@"input_tokens"] ?: @0,
+        deltaUsage[@"output_tokens"] ?: @0,
+        deltaUsage[@"cached_tokens"] ?: @0,
+        deltaUsage[@"total_tokens"] ?: @0,
+        tot[@"input_tokens"] ?: @0,
+        tot[@"output_tokens"] ?: @0,
+        tot[@"cached_tokens"] ?: @0,
+        tot[@"total_tokens"] ?: @0]];
+    }
     if (useResponses) {
       NSString *rid = [resp[@"id"] isKindOfClass:NSString.class] ? (NSString *)resp[@"id"] : @"";
       rid = OnDeviceAgentTrim(rid);
@@ -2260,7 +2566,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
         if (self.chat) {
           NSMutableDictionary *chatItem = [NSMutableDictionary dictionary];
           chatItem[@"step"] = @(step);
-          chatItem[@"kind"] = @"fix_request";
+          chatItem[@"kind"] = @"request";
           chatItem[@"attempt"] = @(attempt + 1);
           chatItem[@"text"] = fixText ?: @"";
             if (captureRawConversation) {
@@ -2296,6 +2602,21 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 
       NSString *fixContent = useResponses ? ([self contentFromResponsesResponse:fixResp] ?: @"") : ([self contentFromOpenAIResponse:fixResp] ?: @"");
       NSString *fixReasoning = useResponses ? [self reasoningFromResponsesResponse:fixResp] : [self reasoningFromOpenAIResponse:fixResp];
+      NSDictionary *fixDeltaUsage = [self accumulateTokenUsageFromResponse:fixResp];
+      if (fixDeltaUsage.count > 0) {
+        NSDictionary *tot = [self tokenUsageSnapshot];
+        [self emit:[NSString stringWithFormat:
+          @"[TOKENS] req=%@ (+in=%@, +out=%@, +cached=%@, +total=%@) cum(in=%@, out=%@, cached=%@, total=%@)",
+          tot[@"requests"] ?: @0,
+          fixDeltaUsage[@"input_tokens"] ?: @0,
+          fixDeltaUsage[@"output_tokens"] ?: @0,
+          fixDeltaUsage[@"cached_tokens"] ?: @0,
+          fixDeltaUsage[@"total_tokens"] ?: @0,
+          tot[@"input_tokens"] ?: @0,
+          tot[@"output_tokens"] ?: @0,
+          tot[@"cached_tokens"] ?: @0,
+          tot[@"total_tokens"] ?: @0]];
+      }
       if (useResponses) {
         NSString *rid = [fixResp[@"id"] isKindOfClass:NSString.class] ? (NSString *)fixResp[@"id"] : @"";
         rid = OnDeviceAgentTrim(rid);
@@ -2311,7 +2632,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
       if (self.chat) {
         NSMutableDictionary *chatItem = [NSMutableDictionary dictionary];
         chatItem[@"step"] = @(step);
-        chatItem[@"kind"] = @"fix_response";
+        chatItem[@"kind"] = @"response";
         chatItem[@"attempt"] = @(attempt + 1);
           chatItem[@"content"] = fixContent ?: @"";
           if (fixReasoning.length > 0) {
@@ -2454,14 +2775,18 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 @property (nonatomic, strong) dispatch_queue_t stateQueue;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *chatItems;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSData *> *stepScreenshots;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *stepScreenshotOrder;
 @property (nonatomic, strong) NSMutableDictionary *config;
 @property (nonatomic, strong) OnDeviceAgent *agent;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, copy) NSString *lastMessage;
 @property (nonatomic, copy) NSString *notes;
+@property (nonatomic, copy) NSDictionary *tokenUsage;
 @property (nonatomic, assign) NSInteger runTokenCounter;
 @property (nonatomic, assign) NSInteger activeRunToken;
 - (void)resetRuntime;
+- (void)factoryReset;
 @end
 
 @implementation OnDeviceAgentManager
@@ -2485,10 +2810,13 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   _stateQueue = dispatch_queue_create("ondevice_agent.state", DISPATCH_QUEUE_SERIAL);
   _logLines = [NSMutableArray array];
   _chatItems = [NSMutableArray array];
+  _stepScreenshots = [NSMutableDictionary dictionary];
+  _stepScreenshotOrder = [NSMutableArray array];
   _config = [NSMutableDictionary dictionary];
   _running = NO;
   _lastMessage = @"";
   _notes = @"";
+  _tokenUsage = @{};
 
   [self loadConfigFromDefaults];
   return self;
@@ -2530,7 +2858,27 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
       d[@"ts"] = OnDeviceAgentNowString();
     }
     [self.chatItems addObject:d.copy];
-    while (self.chatItems.count > kOnDeviceAgentMaxChatItems) {
+
+    NSInteger maxSteps = OnDeviceAgentMaxChatSteps(self.config);
+    NSInteger lastStep = OnDeviceAgentParseInt(d[@"step"], -1);
+    if (lastStep >= 0 && maxSteps > 0) {
+      NSInteger minStep = lastStep - maxSteps + 1;
+      if (minStep < 0) {
+        minStep = 0;
+      }
+      while (self.chatItems.count > 0) {
+        NSDictionary *first = self.chatItems.firstObject;
+        NSInteger s = OnDeviceAgentParseInt(first[@"step"], -1);
+        if (s >= 0 && s < minStep) {
+          [self.chatItems removeObjectAtIndex:0];
+          continue;
+        }
+        break;
+      }
+    }
+
+    NSUInteger hardLimit = OnDeviceAgentMaxChatItemsHardLimit(self.config);
+    while (self.chatItems.count > hardLimit) {
       [self.chatItems removeObjectAtIndex:0];
     }
   });
@@ -2548,9 +2896,102 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
     self.running = NO;
     self.lastMessage = @"";
     self.notes = @"";
+    self.tokenUsage = @{};
+    [self.stepScreenshots removeAllObjects];
+    [self.stepScreenshotOrder removeAllObjects];
     [self.chatItems removeAllObjects];
     [self.logLines removeAllObjects];
   });
+}
+
+- (void)removePersistedConfigFromDefaults
+{
+  NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+  NSArray<NSString *> *keys = @[
+    kOnDeviceAgentTaskKey,
+    kOnDeviceAgentBaseURLKey,
+    kOnDeviceAgentModelKey,
+    kOnDeviceAgentApiModeKey,
+    kOnDeviceAgentApiKeyKey,
+    kOnDeviceAgentRememberApiKeyKey,
+    kOnDeviceAgentUseCustomSystemPromptKey,
+    kOnDeviceAgentCustomSystemPromptKey,
+    kOnDeviceAgentReasoningEffortKey,
+    kOnDeviceAgentDoubaoSeedEnableSessionCacheKey,
+    kOnDeviceAgentMaxCompletionTokensKey,
+    kOnDeviceAgentMaxStepsKey,
+    kOnDeviceAgentTimeoutSecondsKey,
+    kOnDeviceAgentStepDelaySecondsKey,
+    kOnDeviceAgentInsecureSkipTLSVerifyKey,
+    kOnDeviceAgentDebugLogRawAssistantKey,
+    kOnDeviceAgentHalfResScreenshotKey,
+    kOnDeviceAgentUseW3CActionsForSwipeKey,
+  ];
+  for (NSString *k in keys) {
+    [d removeObjectForKey:k];
+  }
+}
+
+- (void)factoryReset
+{
+  dispatch_sync(self.stateQueue, ^{
+    self.runTokenCounter += 1;
+    self.activeRunToken = self.runTokenCounter;
+    if (self.agent != nil) {
+      [self.agent requestStop];
+    }
+    self.agent = nil;
+    self.running = NO;
+    self.lastMessage = @"";
+    self.notes = @"";
+    self.tokenUsage = @{};
+    [self.stepScreenshots removeAllObjects];
+    [self.stepScreenshotOrder removeAllObjects];
+    [self.chatItems removeAllObjects];
+    [self.logLines removeAllObjects];
+
+    [self removePersistedConfigFromDefaults];
+    [self.config removeAllObjects];
+    [self loadConfigFromDefaults];
+  });
+}
+
+- (void)storeStepScreenshotPNG:(NSData *)png step:(NSInteger)step token:(NSInteger)token
+{
+  if (![png isKindOfClass:NSData.class] || png.length == 0) {
+    return;
+  }
+  dispatch_async(self.stateQueue, ^{
+    if (token != self.activeRunToken) {
+      return;
+    }
+    NSNumber *k = @(step);
+    if (self.stepScreenshots[k] == nil) {
+      [self.stepScreenshotOrder addObject:k];
+    }
+    self.stepScreenshots[k] = png;
+    NSUInteger maxSteps = (NSUInteger)MAX(1, OnDeviceAgentMaxChatSteps(self.config));
+    while (self.stepScreenshotOrder.count > maxSteps) {
+      NSNumber *oldest = self.stepScreenshotOrder.firstObject;
+      if (oldest == nil) {
+        break;
+      }
+      [self.stepScreenshotOrder removeObjectAtIndex:0];
+      [self.stepScreenshots removeObjectForKey:oldest];
+    }
+  });
+}
+
+- (NSString *)stepScreenshotBase64ForStep:(NSInteger)step
+{
+  __block NSData *png = nil;
+  dispatch_sync(self.stateQueue, ^{
+    png = self.stepScreenshots[@(step)];
+  });
+  if (![png isKindOfClass:NSData.class] || png.length == 0) {
+    return @"";
+  }
+  return [png base64EncodedStringWithOptions:0] ?: @"";
 }
 
 - (void)loadConfigFromDefaults
@@ -2573,7 +3014,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 
   BOOL useCustomSystemPrompt = [d boolForKey:kOnDeviceAgentUseCustomSystemPromptKey];
   NSString *customSystemPrompt = [d stringForKey:kOnDeviceAgentCustomSystemPromptKey] ?: @"";
-  NSString *apiMode = [d stringForKey:kOnDeviceAgentApiModeKey] ?: @"";
+  NSString *apiMode = OnDeviceAgentNormalizeApiMode([d stringForKey:kOnDeviceAgentApiModeKey] ?: @"");
   NSString *reasoningEffort = [d stringForKey:kOnDeviceAgentReasoningEffortKey] ?: @"";
   id cacheObj = [d objectForKey:kOnDeviceAgentDoubaoSeedEnableSessionCacheKey];
   BOOL enableDoubaoCache = (cacheObj == nil) ? YES : [d boolForKey:kOnDeviceAgentDoubaoSeedEnableSessionCacheKey];
@@ -2592,11 +3033,15 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   BOOL insecure = [d boolForKey:kOnDeviceAgentInsecureSkipTLSVerifyKey];
   id dbgObj = [d objectForKey:kOnDeviceAgentDebugLogRawAssistantKey];
   BOOL debugRaw = (dbgObj == nil) ? YES : [d boolForKey:kOnDeviceAgentDebugLogRawAssistantKey];
+  id halfResObj = [d objectForKey:kOnDeviceAgentHalfResScreenshotKey];
+  BOOL halfRes = (halfResObj == nil) ? YES : [d boolForKey:kOnDeviceAgentHalfResScreenshotKey];
+  id w3cSwipeObj = [d objectForKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
+  BOOL w3cSwipe = (w3cSwipeObj == nil) ? YES : [d boolForKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
 
   self.config[kOnDeviceAgentTaskKey] = task;
   self.config[kOnDeviceAgentBaseURLKey] = baseURL;
   self.config[kOnDeviceAgentModelKey] = model;
-  self.config[kOnDeviceAgentApiModeKey] = apiMode.length > 0 ? apiMode : kOnDeviceAgentApiModeResponsesStateful;
+  self.config[kOnDeviceAgentApiModeKey] = apiMode.length > 0 ? apiMode : kOnDeviceAgentApiModeResponses;
   self.config[kOnDeviceAgentApiKeyKey] = apiKey;
   self.config[kOnDeviceAgentRememberApiKeyKey] = @(remember);
   self.config[kOnDeviceAgentUseCustomSystemPromptKey] = @(useCustomSystemPrompt);
@@ -2609,6 +3054,8 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   self.config[kOnDeviceAgentStepDelaySecondsKey] = @(stepDelay);
   self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey] = @(insecure);
   self.config[kOnDeviceAgentDebugLogRawAssistantKey] = @(debugRaw);
+  self.config[kOnDeviceAgentHalfResScreenshotKey] = @(halfRes);
+  self.config[kOnDeviceAgentUseW3CActionsForSwipeKey] = @(w3cSwipe);
 }
 
 - (void)persistConfigToDefaults
@@ -2617,9 +3064,9 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   [d setObject:OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentTaskKey])) forKey:kOnDeviceAgentTaskKey];
   [d setObject:OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentBaseURLKey])) forKey:kOnDeviceAgentBaseURLKey];
   [d setObject:OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentModelKey])) forKey:kOnDeviceAgentModelKey];
-  NSString *apiMode = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiModeKey]));
+  NSString *apiMode = OnDeviceAgentNormalizeApiMode(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiModeKey]));
   if (apiMode.length == 0) {
-    apiMode = kOnDeviceAgentApiModeResponsesStateful;
+    apiMode = kOnDeviceAgentApiModeResponses;
   }
   [d setObject:apiMode forKey:kOnDeviceAgentApiModeKey];
 
@@ -2657,6 +3104,8 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
         forKey:kOnDeviceAgentStepDelaySecondsKey];
   [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey], NO) forKey:kOnDeviceAgentInsecureSkipTLSVerifyKey];
   [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], YES) forKey:kOnDeviceAgentDebugLogRawAssistantKey];
+  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], NO) forKey:kOnDeviceAgentHalfResScreenshotKey];
+  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseW3CActionsForSwipeKey], YES) forKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
   [d synchronize];
 }
 
@@ -2669,7 +3118,7 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   NSString *apiKey = OnDeviceAgentNormalizeApiKey(OnDeviceAgentStringOrEmpty(args[@"api_key"]));
 
   if ([args objectForKey:@"api_mode"] != nil && apiMode.length > 0) {
-    if ([apiMode isEqualToString:kOnDeviceAgentApiModeChatCompletions] || [apiMode isEqualToString:kOnDeviceAgentApiModeResponsesStateful]) {
+    if ([apiMode isEqualToString:kOnDeviceAgentApiModeChatCompletions] || [apiMode isEqualToString:kOnDeviceAgentApiModeResponses]) {
       self.config[kOnDeviceAgentApiModeKey] = apiMode;
     }
   }
@@ -2719,6 +3168,12 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   if ([args objectForKey:@"debug_log_raw_assistant"] != nil) {
     self.config[kOnDeviceAgentDebugLogRawAssistantKey] = @(OnDeviceAgentParseBool(args[@"debug_log_raw_assistant"], YES));
   }
+  if ([args objectForKey:@"half_res_screenshot"] != nil) {
+    self.config[kOnDeviceAgentHalfResScreenshotKey] = @(OnDeviceAgentParseBool(args[@"half_res_screenshot"], YES));
+  }
+  if ([args objectForKey:@"use_w3c_actions_for_swipe"] != nil) {
+    self.config[kOnDeviceAgentUseW3CActionsForSwipeKey] = @(OnDeviceAgentParseBool(args[@"use_w3c_actions_for_swipe"], YES));
+  }
 
   [self persistConfigToDefaults];
 }
@@ -2741,6 +3196,8 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   cfg[@"default_system_prompt"] = OnDeviceAgentDefaultSystemPromptTemplate();
   cfg[@"reasoning_effort"] = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentReasoningEffortKey]);
   cfg[@"doubao_seed_enable_session_cache"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentDoubaoSeedEnableSessionCacheKey], YES));
+  cfg[@"half_res_screenshot"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], YES));
+  cfg[@"use_w3c_actions_for_swipe"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseW3CActionsForSwipeKey], YES));
 
   cfg[@"max_completion_tokens"] = @(OnDeviceAgentParseInt(self.config[kOnDeviceAgentMaxCompletionTokensKey], kOnDeviceAgentDefaultMaxCompletionTokens));
   cfg[@"max_steps"] = @(OnDeviceAgentParseInt(self.config[kOnDeviceAgentMaxStepsKey], kOnDeviceAgentDefaultMaxSteps));
@@ -2756,15 +3213,19 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
   __block NSDictionary *st = nil;
   dispatch_sync(self.stateQueue, ^{
     NSString *notes = self.notes ?: @"";
+    NSDictionary *tokens = self.tokenUsage ?: @{};
     if (self.agent != nil) {
       notes = self.agent.workingNote ?: @"";
       self.notes = notes;
+      tokens = [self.agent tokenUsageSnapshot] ?: @{};
+      self.tokenUsage = tokens;
     }
     st = @{
       @"running": @(self.running),
       @"last_message": self.lastMessage ?: @"",
       @"config": [self safeConfigSnapshot],
       @"notes": notes,
+      @"token_usage": tokens,
       @"log_lines": @(self.logLines.count),
     };
   });
@@ -2862,7 +3323,10 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
     self.running = YES;
     self.lastMessage = @"Started";
     self.notes = @"";
+    self.tokenUsage = @{};
     [self.chatItems removeAllObjects];
+    [self.stepScreenshots removeAllObjects];
+    [self.stepScreenshotOrder removeAllObjects];
 
     __weak __typeof(self) weakSelf = self;
     OnDeviceAgentLogBlock log = ^(NSString *line) {
@@ -2878,6 +3342,13 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
         return;
       }
       [strongSelf appendChatItem:item token:token];
+    };
+    OnDeviceAgentScreenshotBlock screenshot = ^(NSInteger step, NSData *png) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf == nil) {
+        return;
+      }
+      [strongSelf storeStepScreenshotPNG:png step:step token:token];
     };
     OnDeviceAgentFinishBlock finish = ^(BOOL success, NSString *message) {
       __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -2895,12 +3366,13 @@ typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
         strongSelf.lastMessage = finalMessage;
         if (strongSelf.agent != nil) {
           strongSelf.notes = strongSelf.agent.workingNote ?: (strongSelf.notes ?: @"");
+          strongSelf.tokenUsage = [strongSelf.agent tokenUsageSnapshot] ?: (strongSelf.tokenUsage ?: @{});
         }
         strongSelf.agent = nil;
       });
     };
 
-    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat finish:finish];
+    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot finish:finish];
     [self appendLog:@"[AGENT] Agent created. Running..." token:token];
     [self.agent start];
   });
@@ -2961,7 +3433,12 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"    .primary{background:var(--primary);color:#fff;}\n"
     @"    .danger{background:var(--danger);color:#fff;}\n"
     @"    .ghost{background:var(--card);color:inherit;border:1px solid var(--border);}\n"
-    @"    .muted{color:var(--muted);font-size:13px;line-height:1.45;}\n"
+	    @"    .muted{color:var(--muted);font-size:13px;line-height:1.45;}\n"
+	    @"    .callout{margin-top:10px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius);padding:10px 12px;}\n"
+	    @"    .callout-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}\n"
+	    @"    .callout-text{font-size:13px;line-height:1.45;color:var(--muted);}\n"
+	    @"    .callout-text code{font-size:12px;}\n"
+	    @"    .callout-btn{min-height:32px;padding:6px 10px;border-radius:10px;flex:0 0 auto;font-size:13px;}\n"
     @"    .error{color:var(--danger);font-size:13px;line-height:1.45;margin-top:10px;white-space:pre-wrap;}\n"
     @"    input.invalid,textarea.invalid,select.invalid{border-color:var(--danger);box-shadow:0 0 0 3px rgba(255,59,48,0.18);}\n"
     @"    .check{display:flex;align-items:center;gap:10px;margin-top:10px;user-select:none;}\n"
@@ -2978,97 +3455,247 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"</head>\n"
     @"<body>\n"
     @"  <div class=\"container\">\n"
-    @"    <h2>iOS WDA On‑Device Agent (WDA Runner)</h2>\n"
-    @"    <div class=\"muted\">\n"
-    @"      This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).\n"
-    @"      If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.\n"
-    @"    </div>\n"
-    @"    <label>Base URL (OpenAI-compatible)</label>\n"
+	    @"    <h2 data-i18n=\"h_title\">iOS WDA On‑Device Agent (WDA Runner)</h2>\n"
+		    @"    <div class=\"muted\">\n"
+		    @"      <div data-i18n-html=\"intro_1\">This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).</div>\n"
+		    @"      <div data-i18n-html=\"intro_2\">If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.</div>\n"
+		    @"      <div data-i18n-html=\"wireless_hint_short\">Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.</div>\n"
+		    @"    </div>\n"
+	    @"    <label data-i18n=\"label_base_url\">Base URL (OpenAI-compatible)</label>\n"
     @"    <input id=\"base_url\" class=\"mono\" placeholder=\"https://...\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
-    @"    <label>Model</label>\n"
+    @"    <label data-i18n=\"label_model\">Model</label>\n"
     @"    <input id=\"model\" class=\"mono\" placeholder=\"gpt-4o-mini / ...\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
-    @"    <label>API Mode</label>\n"
+    @"    <label data-i18n=\"label_api_mode\">API Mode</label>\n"
     @"    <select id=\"api_mode\" class=\"ghost\" style=\"width:100%;min-height:44px;padding:10px 12px;border-radius:var(--radius);\">\n"
-    @"      <option value=\"chat_completions\">Chat Completions</option>\n"
-    @"      <option value=\"responses_stateful\">Responses (stateful)</option>\n"
+    @"      <option value=\"responses\" data-i18n=\"opt_responses\">Responses</option>\n"
+    @"      <option value=\"chat_completions\" data-i18n=\"opt_chat_completions\">Chat Completions</option>\n"
     @"    </select>\n"
     @"    <div id=\"doubao_seed_cache_row\" style=\"display:none\">\n"
-    @"      <label class=\"check muted\"><input type=\"checkbox\" id=\"doubao_seed_enable_session_cache\" checked /> <span>Enable Session Cache (Doubao Seed)</span></label>\n"
+    @"      <label class=\"check muted\"><input type=\"checkbox\" id=\"doubao_seed_enable_session_cache\" checked /> <span data-i18n=\"cb_doubao_cache\">Enable Session Cache (Doubao Seed)</span></label>\n"
     @"    </div>\n"
-    @"    <label>API Key</label>\n"
+    @"    <label data-i18n=\"label_api_key\">API Key</label>\n"
     @"    <input id=\"api_key\" class=\"mono\" type=\"password\" placeholder=\"sk-...\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" autocomplete=\"off\" />\n"
-    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"show_api_key\" /> <span>Show API key</span></label>\n"
-    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"remember_api_key\" /> <span>Remember API key on device (NOT recommended for shared devices)</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"show_api_key\" /> <span data-i18n=\"cb_show_api_key\">Show API key</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"remember_api_key\" /> <span data-i18n=\"cb_remember_api_key\">Remember API key on device (NOT recommended for shared devices)</span></label>\n"
     @"    <div class=\"label-row\">\n"
-    @"      <label for=\"task\">Task</label>\n"
+    @"      <label for=\"task\" data-i18n=\"label_task\">Task</label>\n"
     @"      <div class=\"label-actions\">\n"
-    @"        <button type=\"button\" class=\"ghost btn-sm\" onclick=\"openEditorPage('task')\">Edit Page</button>\n"
+    @"        <button type=\"button\" class=\"ghost btn-sm\" onclick=\"openEditorPage('task')\" data-i18n=\"btn_edit_page\">Edit Page</button>\n"
     @"      </div>\n"
     @"    </div>\n"
-    @"    <textarea id=\"task\" placeholder=\"Describe what to do... (e.g., open Xiaohongshu and ...)\"></textarea>\n"
+    @"    <textarea id=\"task\" placeholder=\"Describe what to do... (e.g., open Xiaohongshu and ...)\" data-i18n-placeholder=\"ph_task\"></textarea>\n"
     @"    <div class=\"row\">\n"
     @"      <div>\n"
-    @"        <label>Max Steps (&gt;0)</label>\n"
+    @"        <label data-i18n=\"label_max_steps\">Max Steps (&gt;0)</label>\n"
     @"        <input id=\"max_steps\" placeholder=\"__DEFAULT_MAX_STEPS__\" inputmode=\"numeric\" />\n"
     @"      </div>\n"
     @"      <div>\n"
-    @"        <label>Timeout (seconds, &gt;0)</label>\n"
+    @"        <label data-i18n=\"label_timeout\">Timeout (seconds, &gt;0)</label>\n"
     @"        <input id=\"timeout_seconds\" placeholder=\"__DEFAULT_TIMEOUT_SECONDS__\" inputmode=\"numeric\" />\n"
     @"      </div>\n"
     @"      <div>\n"
-    @"        <label>Step Delay (seconds, &gt;0)</label>\n"
+    @"        <label data-i18n=\"label_step_delay\">Step Delay (seconds, &gt;0)</label>\n"
     @"        <input id=\"step_delay_seconds\" placeholder=\"__DEFAULT_STEP_DELAY_SECONDS__\" inputmode=\"decimal\" />\n"
     @"      </div>\n"
     @"    </div>\n"
     @"    <label id=\"max_tokens_label\">Max Completion Tokens (&gt;0)</label>\n"
     @"    <input id=\"max_completion_tokens\" placeholder=\"__DEFAULT_MAX_COMPLETION_TOKENS__\" inputmode=\"numeric\" />\n"
-    @"    <label>Reasoning Effort</label>\n"
-    @"    <input id=\"reasoning_effort\" class=\"mono\" placeholder=\"(default) e.g. minimal / low / medium / high\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
-    @"    <h3>System Prompt</h3>\n"
+    @"    <label data-i18n=\"label_reasoning_effort\">Reasoning Effort</label>\n"
+    @"    <input id=\"reasoning_effort\" class=\"mono\" placeholder=\"(default) e.g. minimal / low / medium / high\" data-i18n-placeholder=\"ph_reasoning_effort\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
+    @"    <h3 data-i18n=\"h_system_prompt\">System Prompt</h3>\n"
     @"    <div class=\"muted\">\n"
-    @"      <div>Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):</div>\n"
+    @"      <div data-i18n=\"help_system_prompt\">Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):</div>\n"
     @"      <div class=\"placeholder-grid\">\n"
     @"        <div><code>{{DATE_ZH}}</code></div><div class=\"ex\">-&gt; __DATE_ZH_EXAMPLE__</div>\n"
     @"        <div><code>{{DATE_EN}}</code></div><div class=\"ex\">-&gt; __DATE_EN_EXAMPLE__</div>\n"
     @"      </div>\n"
     @"    </div>\n"
     @"    <div class=\"label-row\" style=\"margin-top:10px\">\n"
-    @"      <label class=\"check muted\"><input type=\"checkbox\" id=\"use_custom_system_prompt\" /> <span>Use custom system prompt</span></label>\n"
+    @"      <label class=\"check muted\"><input type=\"checkbox\" id=\"use_custom_system_prompt\" /> <span data-i18n=\"cb_use_custom_system_prompt\">Use custom system prompt</span></label>\n"
     @"      <div class=\"label-actions\">\n"
-    @"        <button type=\"button\" class=\"ghost btn-sm\" onclick=\"openEditorPage('system_prompt')\">Edit Page</button>\n"
+    @"        <button type=\"button\" class=\"ghost btn-sm\" onclick=\"restoreSystemPromptDefault()\" data-i18n=\"btn_restore_system_prompt\">Restore default template</button>\n"
+    @"        <button type=\"button\" class=\"ghost btn-sm\" onclick=\"openEditorPage('system_prompt')\" data-i18n=\"btn_edit_page\">Edit Page</button>\n"
     @"      </div>\n"
     @"    </div>\n"
-    @"    <textarea id=\"system_prompt\" class=\"mono\" placeholder=\"(default system prompt)\"></textarea>\n"
-    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"insecure_skip_tls_verify\" /> <span>Insecure: skip TLS verify (debug only)</span></label>\n"
-    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"debug_log_raw_assistant\" /> <span>Debug: capture raw LLM conversation (images/system prompt are placeholders; may contain sensitive info)</span></label>\n"
+    @"    <textarea id=\"system_prompt\" class=\"mono\" placeholder=\"(default system prompt)\" data-i18n-placeholder=\"ph_system_prompt\"></textarea>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"insecure_skip_tls_verify\" /> <span data-i18n=\"cb_insecure_skip_tls\">Insecure: skip TLS verify (debug only)</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"half_res_screenshot\" /> <span data-i18n=\"cb_half_res_screenshot\">Half-resolution screenshots</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"use_w3c_actions_for_swipe\" /> <span data-i18n=\"cb_use_w3c_actions_for_swipe\">Use W3C actions for swipe</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"debug_log_raw_assistant\" /> <span data-i18n=\"cb_debug_raw\">Debug: capture raw LLM conversation (images are placeholders; may contain sensitive info)</span></label>\n"
     @"    <div id=\"form_error\" class=\"error\" style=\"display:none\"></div>\n"
     @"    <div class=\"actions\">\n"
-    @"      <button class=\"primary\" onclick=\"saveCfg()\">Save</button>\n"
-    @"      <button class=\"primary\" onclick=\"start()\">Start</button>\n"
-    @"      <button class=\"danger\" onclick=\"stop()\">Stop</button>\n"
-    @"      <button class=\"ghost\" onclick=\"resetAll()\">Reset</button>\n"
+    @"      <button class=\"primary\" onclick=\"saveCfg()\" data-i18n=\"btn_save\">Save</button>\n"
+    @"      <button class=\"primary\" onclick=\"start()\" data-i18n=\"btn_start\">Start</button>\n"
+    @"      <button class=\"danger\" onclick=\"stop()\" data-i18n=\"btn_stop\">Stop</button>\n"
+    @"      <button class=\"ghost\" onclick=\"resetAll()\" data-i18n=\"btn_reset\">Reset</button>\n"
     @"    </div>\n"
-    @"    <h3>Status</h3>\n"
+    @"    <h3 data-i18n=\"h_status\">Status</h3>\n"
     @"    <pre id=\"status\">Loading...</pre>\n"
-    @"    <h3>Notes</h3>\n"
+    @"    <h3 data-i18n=\"h_notes\">Notes</h3>\n"
     @"    <pre id=\"notes\"></pre>\n"
-    @"    <h3>Conversation</h3>\n"
+    @"    <h3 data-i18n=\"h_conversation\">Conversation</h3>\n"
     @"    <div class=\"muted\" style=\"display:flex;gap:10px;align-items:center;flex-wrap:wrap;\">\n"
-    @"      <span>View:</span>\n"
+    @"      <span data-i18n=\"label_view\">View:</span>\n"
     @"      <select id=\"chat_mode\" class=\"ghost\" style=\"flex:0 0 auto;min-height:38px;padding:6px 10px;border-radius:var(--radius);\">\n"
-    @"        <option value=\"structured\">Structured</option>\n"
-    @"        <option value=\"raw\">Raw (request/response)</option>\n"
+    @"        <option value=\"structured\" data-i18n=\"opt_structured\">Structured</option>\n"
+    @"        <option value=\"raw\" data-i18n=\"opt_raw\">Raw (request/response)</option>\n"
     @"      </select>\n"
-    @"      <span>Raw shows per-turn API request/response JSON (history content omitted; image/system are placeholders).</span>\n"
+    @"      <span data-i18n=\"help_raw_view\">Raw shows per-turn API request/response JSON (history content omitted; images are placeholders).</span>\n"
     @"    </div>\n"
     @"    <pre id=\"chat\"></pre>\n"
-    @"    <h3>Logs</h3>\n"
+    @"    <h3 data-i18n=\"h_logs\">Logs</h3>\n"
     @"    <pre id=\"logs\"></pre>\n"
     @"  </div>\n"
     @"  <script>\n";
 
   static NSString *const kOnDeviceAgentPageJS =
     @"    const DEFAULT_SYSTEM_PROMPT = __DEFAULT_SYSTEM_PROMPT_JSON__;\n"
+    @"    const LANG = ((navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en';\n"
+    @"    const I18N = {\n"
+    @"      en: {\n"
+    @"        page_title: 'iOS WDA On‑Device Agent',\n"
+    @"        h_title: 'iOS WDA On‑Device Agent (WDA Runner)',\n"
+    @"        intro_1: 'This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).',\n"
+    @"        intro_2: 'If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.',\n"
+    @"        wireless_hint_short: 'Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.',\n"
+    @"        label_base_url: 'Base URL (OpenAI-compatible)',\n"
+    @"        label_model: 'Model',\n"
+        @"        label_api_mode: 'API Mode',\n"
+        @"        opt_chat_completions: 'Chat Completions',\n"
+        @"        opt_responses: 'Responses',\n"
+        @"        cb_doubao_cache: 'Enable Session Cache (Doubao Seed)',\n"
+    @"        label_api_key: 'API Key',\n"
+    @"        cb_show_api_key: 'Show API key',\n"
+    @"        cb_remember_api_key: 'Remember API key on device (NOT recommended for shared devices)',\n"
+    @"        ph_api_key_set: '(set)',\n"
+    @"        label_task: 'Task',\n"
+    @"        btn_edit_page: 'Edit Page',\n"
+    @"        ph_task: 'Describe what to do... (e.g., open Xiaohongshu and ...)',\n"
+    @"        label_max_steps: 'Max Steps (>0)',\n"
+    @"        label_timeout: 'Timeout (seconds, >0)',\n"
+    @"        label_step_delay: 'Step Delay (seconds, >0)',\n"
+    @"        label_max_output_tokens_gt0: 'Max Output Tokens (>0)',\n"
+    @"        label_max_completion_tokens_gt0: 'Max Completion Tokens (>0)',\n"
+    @"        label_max_output_tokens: 'Max Output Tokens',\n"
+    @"        label_max_completion_tokens: 'Max Completion Tokens',\n"
+    @"        label_reasoning_effort: 'Reasoning Effort',\n"
+    @"        ph_reasoning_effort: '(default) e.g. minimal / low / medium / high',\n"
+    @"        h_system_prompt: 'System Prompt',\n"
+    @"        help_system_prompt: 'Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):',\n"
+    @"        cb_use_custom_system_prompt: 'Use custom system prompt',\n"
+        @"        btn_restore_system_prompt: 'Restore default template',\n"
+        @"        ph_system_prompt: '(default system prompt)',\n"
+        @"        cb_insecure_skip_tls: 'Insecure: skip TLS verify (debug only)',\n"
+        @"        cb_half_res_screenshot: 'Half-resolution screenshots',\n"
+        @"        cb_use_w3c_actions_for_swipe: 'Use W3C actions for swipe',\n"
+        @"        cb_debug_raw: 'Debug: capture raw LLM conversation (images are placeholders; may contain sensitive info)',\n"
+    @"        btn_save: 'Save',\n"
+    @"        btn_start: 'Start',\n"
+    @"        btn_stop: 'Stop',\n"
+    @"        btn_reset: 'Reset',\n"
+    @"        h_status: 'Status',\n"
+    @"        h_notes: 'Notes',\n"
+    @"        h_conversation: 'Conversation',\n"
+    @"        label_view: 'View:',\n"
+    @"        opt_structured: 'Structured',\n"
+    @"        opt_raw: 'Raw (request/response)',\n"
+    @"        help_raw_view: 'Raw shows per-turn API request/response JSON (history content omitted; images are placeholders).',\n"
+    @"        h_logs: 'Logs',\n"
+    @"        err_max_steps_gt0: 'Max Steps must be > 0',\n"
+    @"        err_timeout_gt0: 'Timeout (seconds) must be > 0',\n"
+    @"        err_step_delay_gt0: 'Step Delay (seconds) must be > 0',\n"
+    @"        err_must_be_gt0: 'must be > 0',\n"
+    @"        word_step: 'Step',\n"
+    @"        word_attempt: 'attempt',\n"
+    @"        sep_reasoning: '--- reasoning ---',\n"
+    @"        sep_content: '--- content ---',\n"
+    @"        raw_disabled: '<raw capture disabled>',\n"
+    @"      },\n"
+    @"      zh: {\n"
+    @"        page_title: 'iOS WDA 设备端智能体',\n"
+    @"        h_title: 'iOS WDA 设备端智能体（WDA Runner）',\n"
+    @"        intro_1: '此页面用于配置并启动一个运行在 <b>WebDriverAgentRunner (XCTest)</b> 内部的智能体。',\n"
+    @"        intro_2: '如果局域网访问失败，请在 iPhone 上用 <code>http://127.0.0.1:8100/agent</code> 打开此页面。',\n"
+    @"        wireless_hint_short: '提示：如果局域网不可达，请在 iPhone 设置中为 Runner 开启<b>无线数据</b>，然后重新打开 Runner。',\n"
+    @"        label_base_url: 'Base URL（OpenAI 兼容）',\n"
+    @"        label_model: '模型',\n"
+        @"        label_api_mode: 'API 模式',\n"
+        @"        opt_chat_completions: 'Chat Completions',\n"
+        @"        opt_responses: 'Responses',\n"
+        @"        cb_doubao_cache: '启用会话缓存（豆包 Seed）',\n"
+    @"        label_api_key: 'API Key',\n"
+    @"        cb_show_api_key: '显示 API key',\n"
+    @"        cb_remember_api_key: '在设备上记住 API key（不建议共享设备）',\n"
+    @"        ph_api_key_set: '（已设置）',\n"
+    @"        label_task: '任务',\n"
+    @"        btn_edit_page: '编辑页',\n"
+    @"        ph_task: '描述要做什么……（例如：打开小红书并……）',\n"
+    @"        label_max_steps: '最大步数（>0）',\n"
+    @"        label_timeout: '超时（秒，>0）',\n"
+    @"        label_step_delay: '步间延迟（秒，>0）',\n"
+    @"        label_max_output_tokens_gt0: '最大输出 tokens（>0）',\n"
+    @"        label_max_completion_tokens_gt0: '最大 completion tokens（>0）',\n"
+    @"        label_max_output_tokens: '最大输出 tokens',\n"
+    @"        label_max_completion_tokens: '最大 completion tokens',\n"
+    @"        label_reasoning_effort: '思考强度',\n"
+    @"        ph_reasoning_effort: '（默认）例如：minimal / low / medium / high',\n"
+    @"        h_system_prompt: '系统提示词',\n"
+    @"        help_system_prompt: '自定义系统提示词仅在勾选后生效。日期占位符（运行时替换）：',\n"
+    @"        cb_use_custom_system_prompt: '使用自定义系统提示词',\n"
+        @"        btn_restore_system_prompt: '恢复默认模板',\n"
+        @"        ph_system_prompt: '（默认系统提示词）',\n"
+        @"        cb_insecure_skip_tls: '不安全：跳过 TLS 校验（仅调试）',\n"
+        @"        cb_half_res_screenshot: '半分辨率截图',\n"
+        @"        cb_use_w3c_actions_for_swipe: 'Swipe 使用 W3C actions',\n"
+        @"        cb_debug_raw: '调试：记录原始对话（图片会用占位符；可能包含敏感信息）',\n"
+    @"        btn_save: '保存',\n"
+    @"        btn_start: '开始',\n"
+    @"        btn_stop: '停止',\n"
+    @"        btn_reset: '重置',\n"
+    @"        h_status: '状态',\n"
+    @"        h_notes: '备注',\n"
+    @"        h_conversation: '对话',\n"
+    @"        label_view: '视图：',\n"
+    @"        opt_structured: '结构化',\n"
+    @"        opt_raw: '原始（请求/响应）',\n"
+    @"        help_raw_view: '原始视图显示每轮 API 请求/响应 JSON（历史内容省略；图片会用占位符）。',\n"
+    @"        h_logs: '日志',\n"
+    @"        err_max_steps_gt0: '最大步数必须 > 0',\n"
+    @"        err_timeout_gt0: '超时（秒）必须 > 0',\n"
+    @"        err_step_delay_gt0: '步间延迟（秒）必须 > 0',\n"
+    @"        err_must_be_gt0: '必须 > 0',\n"
+    @"        word_step: '步骤',\n"
+    @"        word_attempt: '尝试',\n"
+    @"        sep_reasoning: '--- 思考 ---',\n"
+    @"        sep_content: '--- 内容 ---',\n"
+    @"        raw_disabled: '<未开启 raw 记录>',\n"
+    @"      }\n"
+    @"    };\n"
+    @"    function t(key){\n"
+    @"      const table = I18N[LANG] || I18N.en;\n"
+    @"      return (table && table[key]) ? table[key] : ((I18N.en && I18N.en[key]) ? I18N.en[key] : key);\n"
+    @"    }\n"
+    @"    function applyI18n(){\n"
+    @"      try { document.title = t('page_title'); } catch (e) {}\n"
+    @"      const nodes = document.querySelectorAll('[data-i18n]');\n"
+    @"      for (const el of nodes) {\n"
+    @"        const key = el.getAttribute('data-i18n') || '';\n"
+    @"        if (!key) continue;\n"
+    @"        el.textContent = t(key);\n"
+    @"      }\n"
+    @"      const ph = document.querySelectorAll('[data-i18n-placeholder]');\n"
+    @"      for (const el of ph) {\n"
+    @"        const key = el.getAttribute('data-i18n-placeholder') || '';\n"
+    @"        if (!key) continue;\n"
+    @"        el.placeholder = t(key);\n"
+    @"      }\n"
+    @"      const html = document.querySelectorAll('[data-i18n-html]');\n"
+    @"      for (const el of html) {\n"
+    @"        const key = el.getAttribute('data-i18n-html') || '';\n"
+    @"        if (!key) continue;\n"
+    @"        el.innerHTML = t(key);\n"
+    @"      }\n"
+    @"    }\n"
     @"    let dirty = false;\n"
     @"    let lastChatItems = [];\n"
     @"    let composing = false;\n"
@@ -3119,7 +3746,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        el.addEventListener('compositionstart', () => { composing = true; });\n"
     @"        el.addEventListener('compositionend', () => { composing = false; markDirty(); });\n"
     @"      }\n"
-    @"      const cbs = ['remember_api_key','insecure_skip_tls_verify','debug_log_raw_assistant','use_custom_system_prompt','doubao_seed_enable_session_cache'];\n"
+    @"      const cbs = ['remember_api_key','insecure_skip_tls_verify','half_res_screenshot','use_w3c_actions_for_swipe','debug_log_raw_assistant','use_custom_system_prompt','doubao_seed_enable_session_cache'];\n"
     @"      for (const id of cbs){\n"
     @"        const el = document.getElementById(id);\n"
     @"        if (!el) continue;\n"
@@ -3155,7 +3782,13 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      const j = await r.json();\n"
     @"      return j.value || {};\n"
     @"    }\n"
-    @"    function openEditorPage(targetId){\n"
+	    @"    function restoreSystemPromptDefault(){\n"
+	    @"      const el = document.getElementById('system_prompt');\n"
+	    @"      if (!el) return;\n"
+	    @"      el.value = DEFAULT_SYSTEM_PROMPT;\n"
+	    @"      markDirty();\n"
+	    @"    }\n"
+	    @"    function openEditorPage(targetId){\n"
     @"      const t = encodeURIComponent((targetId || '').toString());\n"
     @"      window.location.href = `/agent/edit?target=${t}`;\n"
     @"    }\n"
@@ -3169,6 +3802,8 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        remember_api_key: document.getElementById('remember_api_key').checked,\n"
     @"        debug_log_raw_assistant: document.getElementById('debug_log_raw_assistant').checked,\n"
     @"        doubao_seed_enable_session_cache: document.getElementById('doubao_seed_enable_session_cache').checked,\n"
+    @"        half_res_screenshot: document.getElementById('half_res_screenshot').checked,\n"
+    @"        use_w3c_actions_for_swipe: document.getElementById('use_w3c_actions_for_swipe').checked,\n"
     @"        task: document.getElementById('task').value,\n"
     @"        max_steps: document.getElementById('max_steps').value,\n"
     @"        max_completion_tokens: document.getElementById('max_completion_tokens').value,\n"
@@ -3188,8 +3823,8 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      const delayEl = document.getElementById('step_delay_seconds');\n"
     @"      const tokensEl = document.getElementById('max_completion_tokens');\n"
     @"      const modeEl = document.getElementById('api_mode');\n"
-    @"      const mode = modeEl ? (modeEl.value || 'responses_stateful') : 'responses_stateful';\n"
-    @"      const tokenLabel = (mode === 'responses_stateful') ? 'Max Output Tokens' : 'Max Completion Tokens';\n"
+    @"      const mode = modeEl ? (modeEl.value || 'responses') : 'responses';\n"
+    @"      const tokenLabel = (mode === 'responses') ? t('label_max_output_tokens') : t('label_max_completion_tokens');\n"
     @"\n"
     @"      const maxStepsRaw = ((maxStepsEl && maxStepsEl.value) || '').trim();\n"
     @"      let maxStepsBad = false;\n"
@@ -3198,7 +3833,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        maxStepsBad = !(Number.isFinite(maxSteps) && maxSteps > 0);\n"
     @"      }\n"
     @"      setInvalid(maxStepsEl, maxStepsBad);\n"
-    @"      if (maxStepsBad) errors.push('Max Steps must be > 0');\n"
+    @"      if (maxStepsBad) errors.push(t('err_max_steps_gt0'));\n"
     @"\n"
     @"      const timeoutRaw = ((timeoutEl && timeoutEl.value) || '').trim();\n"
     @"      let timeoutBad = false;\n"
@@ -3207,7 +3842,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        timeoutBad = !(Number.isFinite(timeout) && timeout > 0);\n"
     @"      }\n"
     @"      setInvalid(timeoutEl, timeoutBad);\n"
-    @"      if (timeoutBad) errors.push('Timeout (seconds) must be > 0');\n"
+    @"      if (timeoutBad) errors.push(t('err_timeout_gt0'));\n"
     @"\n"
     @"      const delayRaw = ((delayEl && delayEl.value) || '').trim();\n"
     @"      let delayBad = false;\n"
@@ -3216,7 +3851,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        delayBad = !(Number.isFinite(delay) && delay > 0);\n"
     @"      }\n"
     @"      setInvalid(delayEl, delayBad);\n"
-    @"      if (delayBad) errors.push('Step Delay (seconds) must be > 0');\n"
+    @"      if (delayBad) errors.push(t('err_step_delay_gt0'));\n"
     @"\n"
     @"      const tokensRaw = ((tokensEl && tokensEl.value) || '').trim();\n"
     @"      let tokensBad = false;\n"
@@ -3225,7 +3860,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        tokensBad = !(Number.isFinite(tokens) && tokens > 0);\n"
     @"      }\n"
     @"      setInvalid(tokensEl, tokensBad);\n"
-    @"      if (tokensBad) errors.push(`${tokenLabel} must be > 0`);\n"
+    @"      if (tokensBad) errors.push(`${tokenLabel} ${t('err_must_be_gt0')}`);\n"
     @"\n"
     @"      setFormError(errors);\n"
     @"      return errors.length === 0;\n"
@@ -3233,7 +3868,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"    function fillUI(cfg){\n"
     @"      document.getElementById('base_url').value = cfg.base_url || '';\n"
     @"      document.getElementById('model').value = cfg.model || '';\n"
-    @"      document.getElementById('api_mode').value = cfg.api_mode || 'responses_stateful';\n"
+    @"      document.getElementById('api_mode').value = cfg.api_mode || 'responses';\n"
     @"      document.getElementById('task').value = cfg.task || '';\n"
     @"      document.getElementById('max_steps').value = cfg.max_steps || __DEFAULT_MAX_STEPS__;\n"
     @"      document.getElementById('max_completion_tokens').value = cfg.max_completion_tokens || __DEFAULT_MAX_COMPLETION_TOKENS__;\n"
@@ -3246,23 +3881,25 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      document.getElementById('remember_api_key').checked = !!cfg.remember_api_key;\n"
     @"      document.getElementById('doubao_seed_enable_session_cache').checked = (cfg.doubao_seed_enable_session_cache !== false);\n"
     @"      document.getElementById('insecure_skip_tls_verify').checked = !!cfg.insecure_skip_tls_verify;\n"
+    @"      document.getElementById('half_res_screenshot').checked = !!cfg.half_res_screenshot;\n"
+    @"      document.getElementById('use_w3c_actions_for_swipe').checked = (cfg.use_w3c_actions_for_swipe !== false);\n"
     @"      document.getElementById('debug_log_raw_assistant').checked = (cfg.debug_log_raw_assistant !== false);\n"
     @"      if (cfg.api_key_set) {\n"
-    @"        document.getElementById('api_key').placeholder = '(set)';\n"
+    @"        document.getElementById('api_key').placeholder = t('ph_api_key_set');\n"
     @"      }\n"
     @"      updateApiModeUI();\n"
     @"    }\n"
     @"    function updateApiModeUI(){\n"
     @"      const modeEl = document.getElementById('api_mode');\n"
-    @"      const mode = modeEl ? (modeEl.value || 'responses_stateful') : 'responses_stateful';\n"
+    @"      const mode = modeEl ? (modeEl.value || 'responses') : 'responses';\n"
     @"      const label = document.getElementById('max_tokens_label');\n"
     @"      if (!label) return;\n"
-    @"      label.textContent = (mode === 'responses_stateful') ? 'Max Output Tokens (>0)' : 'Max Completion Tokens (>0)';\n"
+    @"      label.textContent = (mode === 'responses') ? t('label_max_output_tokens_gt0') : t('label_max_completion_tokens_gt0');\n"
     @"      const cacheRow = document.getElementById('doubao_seed_cache_row');\n"
     @"      const modelEl = document.getElementById('model');\n"
     @"      const model = modelEl ? ((modelEl.value || '').toString().trim().toLowerCase()) : '';\n"
     @"      if (cacheRow) {\n"
-    @"        const show = (mode === 'responses_stateful') && model.startsWith('doubao-seed');\n"
+    @"        const show = (mode === 'responses') && model.startsWith('doubao-seed');\n"
     @"        cacheRow.style.display = show ? '' : 'none';\n"
     @"      }\n"
     @"    }\n"
@@ -3280,12 +3917,12 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        for (const it of lastChatItems) {\n"
     @"          const step = (it.step != null) ? it.step : '';\n"
     @"          const kind = (it.kind || '').toString();\n"
-    @"          if (kind === 'system') continue;\n"
-    @"          const attempt = (it.attempt != null) ? ` (attempt ${it.attempt})` : '';\n"
+    @"          // include system prompt for debugging\n"
+    @"          const attempt = (it.attempt != null) ? ((LANG === 'zh') ? `（${t('word_attempt')} ${it.attempt}）` : ` (${t('word_attempt')} ${it.attempt})`) : '';\n"
     @"          const ts = (it.ts || '').toString();\n"
-    @"          const hdr = `${ts} Step ${step} ${kind.toUpperCase()}${attempt}`.trim();\n"
+    @"          const hdr = `${ts} ${t('word_step')} ${step} ${kind.toUpperCase()}${attempt}`.trim();\n"
     @"          out.push(hdr);\n"
-    @"          out.push(it.raw || '<raw capture disabled>');\n"
+    @"          out.push(it.raw || t('raw_disabled'));\n"
     @"          out.push('');\n"
     @"        }\n"
     @"        el.textContent = out.join('\\n');\n"
@@ -3296,17 +3933,17 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      for (const it of lastChatItems) {\n"
     @"        const step = (it.step != null) ? it.step : '';\n"
     @"        const kind = (it.kind || '').toString();\n"
-    @"        const attempt = (it.attempt != null) ? ` (attempt ${it.attempt})` : '';\n"
+    @"        const attempt = (it.attempt != null) ? ((LANG === 'zh') ? `（${t('word_attempt')} ${it.attempt}）` : ` (${t('word_attempt')} ${it.attempt})`) : '';\n"
     @"        const ts = (it.ts || '').toString();\n"
-    @"        out.push(`${ts} Step ${step} ${kind}${attempt}`.trim());\n"
-    @"        if (kind.endsWith('request')) {\n"
+    @"        out.push(`${ts} ${t('word_step')} ${step} ${kind}${attempt}`.trim());\n"
+	    @"        if (kind === 'request') {\n"
     @"          out.push(it.text || '');\n"
     @"        } else {\n"
     @"          if (it.reasoning) {\n"
-    @"            out.push('--- reasoning ---');\n"
+    @"            out.push(t('sep_reasoning'));\n"
     @"            out.push(it.reasoning);\n"
     @"          }\n"
-    @"          out.push('--- content ---');\n"
+    @"          out.push(t('sep_content'));\n"
     @"          out.push(it.content || '');\n"
     @"        }\n"
     @"        out.push('');\n"
@@ -3319,7 +3956,13 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      dirty = false;\n"
     @"      await refresh();\n"
     @"    }\n"
+    @"    let refreshInFlight = false;\n"
     @"    async function refresh(){\n"
+    @"      if (refreshInFlight) return;\n"
+    @"      // Avoid UI updates while editing; iOS Safari may jump the caret/scroll when DOM updates frequently.\n"
+    @"      if (isEditing() || composing) return;\n"
+    @"      refreshInFlight = true;\n"
+    @"      try {\n"
     @"      const st = await api('/agent/status');\n"
     @"      document.getElementById('status').textContent = JSON.stringify(st, null, 2);\n"
     @"      const notes = st.notes || '';\n"
@@ -3332,6 +3975,9 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      renderChat();\n"
     @"      const logs = await api('/agent/logs');\n"
     @"      document.getElementById('logs').textContent = (logs.lines||[]).join('\\n');\n"
+    @"      } finally {\n"
+    @"        refreshInFlight = false;\n"
+    @"      }\n"
     @"    }\n"
     @"    async function saveCfg(){\n"
     @"      await commitIME();\n"
@@ -3349,11 +3995,12 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        setFormError([resp.error]);\n"
     @"      }\n"
     @"    }\n"
-    @"    async function stop(){\n"
-    @"      await api('/agent/stop', 'POST');\n"
-    @"      await refresh();\n"
-    @"    }\n"
-    @"    initDirtyTracking();\n"
+	    @"    async function stop(){\n"
+	    @"      await api('/agent/stop', 'POST');\n"
+	    @"      await refresh();\n"
+	    @"    }\n"
+	    @"    applyI18n();\n"
+	    @"    initDirtyTracking();\n"
     @"    {\n"
     @"      const modeEl = document.getElementById('chat_mode');\n"
     @"      if (modeEl) {\n"
@@ -3432,24 +4079,64 @@ static NSString *OnDeviceAgentEditPageHTML(void)
     @"    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",\"Courier New\",monospace;}\n"
     @"  </style>\n";
 
-  static NSString *const kOnDeviceAgentEditPageBody =
-    @"</head>\n"
-    @"<body>\n"
-    @"  <div class=\"bar\">\n"
-    @"    <button class=\"ghost\" onclick=\"goBack()\">Back</button>\n"
-    @"    <div id=\"title\" class=\"title\">Editor</div>\n"
-    @"    <button class=\"primary\" onclick=\"saveAndClose()\">Done</button>\n"
-    @"  </div>\n"
-    @"  <div id=\"hint\" class=\"muted\"></div>\n"
-    @"  <label id=\"custom_row\" class=\"check muted\" style=\"display:none\"><input type=\"checkbox\" id=\"use_custom_system_prompt\" /> <span>Use custom system prompt</span></label>\n"
-    @"  <textarea id=\"text\" placeholder=\"\"></textarea>\n"
-    @"  <script>\n";
+	  static NSString *const kOnDeviceAgentEditPageBody =
+	    @"</head>\n"
+	    @"<body>\n"
+	    @"  <div class=\"bar\">\n"
+	    @"    <button class=\"ghost\" onclick=\"goBack()\" data-i18n=\"btn_back\">Back</button>\n"
+	    @"    <div id=\"title\" class=\"title\">Editor</div>\n"
+	    @"    <button id=\"restore_default\" class=\"ghost\" style=\"display:none\" onclick=\"restoreDefault()\" data-i18n=\"btn_restore_default\">Restore default</button>\n"
+	    @"    <button class=\"primary\" onclick=\"saveAndClose()\" data-i18n=\"btn_done\">Done</button>\n"
+	    @"  </div>\n"
+	    @"  <div id=\"hint\" class=\"muted\"></div>\n"
+	    @"  <label id=\"custom_row\" class=\"check muted\" style=\"display:none\"><input type=\"checkbox\" id=\"use_custom_system_prompt\" /> <span data-i18n=\"cb_use_custom_system_prompt\">Use custom system prompt</span></label>\n"
+	    @"  <textarea id=\"text\" placeholder=\"\"></textarea>\n"
+	    @"  <script>\n";
 
-  static NSString *const kOnDeviceAgentEditPageJS =
-    @"    const DEFAULT_SYSTEM_PROMPT = __DEFAULT_SYSTEM_PROMPT_JSON__;\n"
-    @"    const qs = new URLSearchParams(window.location.search || '');\n"
-    @"    const target = (qs.get('target') || '').toString();\n"
-    @"    let composing = false;\n"
+	  static NSString *const kOnDeviceAgentEditPageJS =
+	    @"    const DEFAULT_SYSTEM_PROMPT = __DEFAULT_SYSTEM_PROMPT_JSON__;\n"
+	    @"    const LANG = ((navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en';\n"
+	    @"    const I18N = {\n"
+	    @"      en: {\n"
+	    @"        btn_back: 'Back',\n"
+	    @"        btn_restore_default: 'Restore default',\n"
+	    @"        btn_done: 'Done',\n"
+	    @"        cb_use_custom_system_prompt: 'Use custom system prompt',\n"
+	    @"        title_task: 'Task',\n"
+	    @"        title_system_prompt: 'System Prompt',\n"
+	    @"        title_editor: 'Editor',\n"
+	    @"        hint_task: 'Edit the task description.',\n"
+	    @"        hint_system_prompt: 'Custom system prompt only takes effect when enabled.',\n"
+	    @"        hint_unknown: 'Unknown target.',\n"
+	    @"      },\n"
+	    @"      zh: {\n"
+	    @"        btn_back: '返回',\n"
+	    @"        btn_restore_default: '恢复默认',\n"
+	    @"        btn_done: '完成',\n"
+	    @"        cb_use_custom_system_prompt: '使用自定义系统提示词',\n"
+	    @"        title_task: '任务',\n"
+	    @"        title_system_prompt: '系统提示词',\n"
+	    @"        title_editor: '编辑',\n"
+	    @"        hint_task: '编辑任务描述。',\n"
+	    @"        hint_system_prompt: '自定义系统提示词仅在勾选后生效。',\n"
+	    @"        hint_unknown: '未知目标。',\n"
+	    @"      }\n"
+	    @"    };\n"
+	    @"    function t(key){\n"
+	    @"      const table = I18N[LANG] || I18N.en;\n"
+	    @"      return (table && table[key]) ? table[key] : ((I18N.en && I18N.en[key]) ? I18N.en[key] : key);\n"
+	    @"    }\n"
+	    @"    function applyI18n(){\n"
+	    @"      const nodes = document.querySelectorAll('[data-i18n]');\n"
+	    @"      for (const el of nodes) {\n"
+	    @"        const key = el.getAttribute('data-i18n') || '';\n"
+	    @"        if (!key) continue;\n"
+	    @"        el.textContent = t(key);\n"
+	    @"      }\n"
+	    @"    }\n"
+	    @"    const qs = new URLSearchParams(window.location.search || '');\n"
+	    @"    const target = (qs.get('target') || '').toString();\n"
+	    @"    let composing = false;\n"
     @"    function isEditing(){\n"
     @"      const el = document.activeElement;\n"
     @"      if (!el || !el.tagName) return false;\n"
@@ -3478,42 +4165,53 @@ static NSString *OnDeviceAgentEditPageHTML(void)
     @"      document.body.style.height = vv.height + 'px';\n"
     @"      document.body.style.transform = `translateY(${vv.offsetTop || 0}px)`;\n"
     @"    }\n"
-    @"    async function load(){\n"
-    @"      updateViewport();\n"
-    @"      const st = await api('/agent/status');\n"
-    @"      const cfg = st.config || {};\n"
+	    @"    async function load(){\n"
+	    @"      updateViewport();\n"
+	    @"      applyI18n();\n"
+	    @"      const st = await api('/agent/status');\n"
+	    @"      const cfg = st.config || {};\n"
     @"      const titleEl = document.getElementById('title');\n"
     @"      const hintEl = document.getElementById('hint');\n"
     @"      const ta = document.getElementById('text');\n"
     @"      const customRow = document.getElementById('custom_row');\n"
     @"      const useCustom = document.getElementById('use_custom_system_prompt');\n"
-    @"      if (!titleEl || !hintEl || !ta || !customRow || !useCustom) return;\n"
-    @"      if (target === 'task') {\n"
-    @"        titleEl.textContent = 'Task';\n"
-    @"        hintEl.textContent = 'Edit the task description.';\n"
-    @"        ta.className = '';\n"
-    @"        ta.value = (cfg.task || '').toString();\n"
-    @"        customRow.style.display = 'none';\n"
-    @"      } else if (target === 'system_prompt') {\n"
-    @"        titleEl.textContent = 'System Prompt';\n"
-    @"        hintEl.textContent = 'Custom system prompt only takes effect when enabled.';\n"
-    @"        ta.className = 'mono';\n"
-    @"        const sp = (cfg.system_prompt || '').toString();\n"
+	    @"      const restoreBtn = document.getElementById('restore_default');\n"
+	    @"      if (!titleEl || !hintEl || !ta || !customRow || !useCustom || !restoreBtn) return;\n"
+	    @"      if (target === 'task') {\n"
+	    @"        titleEl.textContent = t('title_task');\n"
+	    @"        hintEl.textContent = t('hint_task');\n"
+	    @"        ta.className = '';\n"
+	    @"        ta.value = (cfg.task || '').toString();\n"
+	    @"        customRow.style.display = 'none';\n"
+	    @"        restoreBtn.style.display = 'none';\n"
+	    @"      } else if (target === 'system_prompt') {\n"
+	    @"        titleEl.textContent = t('title_system_prompt');\n"
+	    @"        hintEl.textContent = t('hint_system_prompt');\n"
+	    @"        ta.className = 'mono';\n"
+	    @"        const sp = (cfg.system_prompt || '').toString();\n"
     @"        ta.value = sp.length ? sp : DEFAULT_SYSTEM_PROMPT;\n"
     @"        customRow.style.display = '';\n"
-    @"        useCustom.checked = !!cfg.use_custom_system_prompt;\n"
-    @"      } else {\n"
-    @"        titleEl.textContent = 'Editor';\n"
-    @"        hintEl.textContent = 'Unknown target.';\n"
-    @"        ta.className = 'mono';\n"
-    @"        ta.value = '';\n"
+	    @"        useCustom.checked = !!cfg.use_custom_system_prompt;\n"
+	    @"        restoreBtn.style.display = '';\n"
+	    @"      } else {\n"
+	    @"        titleEl.textContent = t('title_editor');\n"
+	    @"        hintEl.textContent = t('hint_unknown');\n"
+	    @"        ta.className = 'mono';\n"
+	    @"        ta.value = '';\n"
     @"        customRow.style.display = 'none';\n"
+    @"        restoreBtn.style.display = 'none';\n"
     @"      }\n"
     @"      ta.addEventListener('compositionstart', () => { composing = true; });\n"
     @"      ta.addEventListener('compositionend', () => { composing = false; });\n"
     @"      try { ta.focus(); } catch (e) {}\n"
     @"    }\n"
     @"    function goBack(){ window.location.href = '/agent'; }\n"
+    @"    function restoreDefault(){\n"
+    @"      if (target !== 'system_prompt') return;\n"
+    @"      const ta = document.getElementById('text');\n"
+    @"      if (!ta) return;\n"
+    @"      ta.value = DEFAULT_SYSTEM_PROMPT;\n"
+    @"    }\n"
     @"    async function saveAndClose(){\n"
     @"      await commitIME();\n"
     @"      const ta = document.getElementById('text');\n"
@@ -3570,15 +4268,18 @@ static NSString *OnDeviceAgentEditPageHTML(void)
     [[FBRoute GET:@"/agent/status"].withoutSession respondWithTarget:self action:@selector(handleGetStatus:)],
     [[FBRoute GET:@"/agent/logs"].withoutSession respondWithTarget:self action:@selector(handleGetLogs:)],
     [[FBRoute GET:@"/agent/chat"].withoutSession respondWithTarget:self action:@selector(handleGetChat:)],
+    [[FBRoute GET:@"/agent/step_screenshot"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshot:)],
     [[FBRoute POST:@"/agent/config"].withoutSession respondWithTarget:self action:@selector(handlePostConfig:)],
     [[FBRoute POST:@"/agent/start"].withoutSession respondWithTarget:self action:@selector(handlePostStart:)],
     [[FBRoute POST:@"/agent/stop"].withoutSession respondWithTarget:self action:@selector(handlePostStop:)],
     [[FBRoute POST:@"/agent/reset"].withoutSession respondWithTarget:self action:@selector(handlePostReset:)],
+    [[FBRoute POST:@"/agent/factory_reset"].withoutSession respondWithTarget:self action:@selector(handlePostFactoryReset:)],
   ];
 }
 
 + (id<FBResponsePayload>)handleGetPage:(FBRouteRequest *)request
 {
+  OnDeviceAgentTriggerWirelessDataPromptIfNeeded();
   return [[OnDeviceAgentTextPayload alloc] initWithText:OnDeviceAgentPageHTML()
                                      contentType:@"text/html;charset=UTF-8"
                                       statusCode:kHTTPStatusCodeOK];
@@ -3604,6 +4305,19 @@ static NSString *OnDeviceAgentEditPageHTML(void)
 + (id<FBResponsePayload>)handleGetChat:(FBRouteRequest *)request
 {
   return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] chat]});
+}
+
++ (id<FBResponsePayload>)handleGetStepScreenshot:(FBRouteRequest *)request
+{
+  NSInteger step = OnDeviceAgentParseInt(request.parameters[@"step"], -1);
+  if (step < 0) {
+    return FBResponseWithObject(@{@"ok": @NO, @"error": @"Missing query parameter: step"});
+  }
+  NSString *b64 = [[OnDeviceAgentManager shared] stepScreenshotBase64ForStep:step] ?: @"";
+  if (b64.length == 0) {
+    return FBResponseWithObject(@{@"ok": @NO, @"error": @"Screenshot not found"});
+  }
+  return FBResponseWithObject(@{@"ok": @YES, @"step": @(step), @"png_base64": b64});
 }
 
 + (id<FBResponsePayload>)handlePostConfig:(FBRouteRequest *)request
@@ -3635,6 +4349,12 @@ static NSString *OnDeviceAgentEditPageHTML(void)
   return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
 }
 
++ (id<FBResponsePayload>)handlePostFactoryReset:(FBRouteRequest *)request
+{
+  [[OnDeviceAgentManager shared] factoryReset];
+  return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
+}
+
 @end
 
 @interface UITestingUITests : FBFailureProofTestCase <FBWebServerDelegate>
@@ -3658,6 +4378,7 @@ static NSString *OnDeviceAgentEditPageHTML(void)
   } else {
     [FBConfiguration disableScreenshots];
   }
+  OnDeviceAgentTriggerWirelessDataPromptIfNeeded();
   [super setUp];
 }
 

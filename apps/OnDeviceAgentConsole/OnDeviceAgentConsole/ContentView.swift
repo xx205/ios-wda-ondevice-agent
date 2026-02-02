@@ -3,89 +3,17 @@ import PhotosUI
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-import Vision
 
 private func OnDeviceAgentDismissKeyboard() {
   UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 }
 
-private func OnDeviceAgentWriteTempText(_ text: String, filename: String) throws -> URL {
-  let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-  guard let data = text.data(using: .utf8) else {
-    throw NSError(domain: "OnDeviceAgentConsole", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot encode text as UTF-8"])
-  }
-  try data.write(to: url, options: .atomic)
-  return url
-}
-
-private func OnDeviceAgentWriteTempPNG(_ image: UIImage, filename: String) throws -> URL {
-  let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-  guard let data = image.pngData() else {
-    throw NSError(domain: "OnDeviceAgentConsole", code: 2, userInfo: [NSLocalizedDescriptionKey: "Cannot encode PNG"])
-  }
-  try data.write(to: url, options: .atomic)
-  return url
-}
-
-private func OnDeviceAgentMakeQRCodeImage(from text: String) -> UIImage? {
-  guard let data = text.data(using: .utf8) else { return nil }
-  guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
-  filter.setValue(data, forKey: "inputMessage")
-  filter.setValue("M", forKey: "inputCorrectionLevel")
-  guard let output = filter.outputImage else { return nil }
-
-  let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
-  let ctx = CIContext(options: nil)
-  guard let cg = ctx.createCGImage(scaled, from: scaled.extent) else { return nil }
-  return UIImage(cgImage: cg)
-}
-
-private func OnDeviceAgentCGImageOrientation(_ o: UIImage.Orientation) -> CGImagePropertyOrientation {
-  switch o {
-  case .up: return .up
-  case .down: return .down
-  case .left: return .left
-  case .right: return .right
-  case .upMirrored: return .upMirrored
-  case .downMirrored: return .downMirrored
-  case .leftMirrored: return .leftMirrored
-  case .rightMirrored: return .rightMirrored
-  @unknown default: return .up
-  }
-}
-
-private func OnDeviceAgentDecodeQRCodeFromImage(_ image: UIImage) async -> String? {
-  await Task.detached(priority: .userInitiated) {
-    guard let cg = image.cgImage else { return nil }
-    let req = VNDetectBarcodesRequest()
-    req.symbologies = [.qr]
-    let handler = VNImageRequestHandler(cgImage: cg, orientation: OnDeviceAgentCGImageOrientation(image.imageOrientation), options: [:])
-    do {
-      try handler.perform([req])
-    } catch {
-      return nil
-    }
-    guard let results = req.results else { return nil }
-    return results.first(where: { $0.symbology == .qr })?.payloadStringValue
-  }.value
-}
-
-private struct OnDeviceAgentActivityView: UIViewControllerRepresentable {
-  let activityItems: [Any]
-
-  func makeUIViewController(context: Context) -> UIActivityViewController {
-    UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-  }
-
-  func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
 struct ContentView: View {
   @EnvironmentObject private var store: ConsoleStore
-  @State private var selectedTab: Tab = .control
+  @State private var selectedTab: Tab = .run
 
   enum Tab: String {
-    case control
+    case run
     case logs
     case chat
     case notes
@@ -93,9 +21,9 @@ struct ContentView: View {
 
   var body: some View {
     TabView(selection: $selectedTab) {
-      ControlView()
-        .tabItem { Label("Control", systemImage: "slider.horizontal.3") }
-        .tag(Tab.control)
+      RunView()
+        .tabItem { Label("Run", systemImage: "slider.horizontal.3") }
+        .tag(Tab.run)
 
       LogsView()
         .tabItem { Label("Logs", systemImage: "doc.plaintext") }
@@ -112,199 +40,412 @@ struct ContentView: View {
   }
 }
 
-private struct ControlView: View {
+private struct RunView: View {
   @EnvironmentObject private var store: ConsoleStore
   @State private var isEditingTask = false
   @State private var isEditingSystemPrompt = false
   @State private var isImportingConfig = false
   @State private var isExportingConfig = false
+  @State private var isQuickStartExpanded = true
+  @State private var isModelExpanded = false
+  @State private var isLimitsExpanded = false
+  @State private var isPromptExpanded = false
+  @State private var isAdvancedExpanded = false
+  @State private var isRunnerExpanded = false
+  @State private var isDangerExpanded = false
 
   private var isRunning: Bool { store.status?.running ?? false }
 
   var body: some View {
     NavigationStack {
       Form {
-        Section("Status") {
-          HStack {
-            Text("Runner")
-            Spacer()
-            Text(isRunning ? "Running" : "Stopped")
-              .foregroundStyle(isRunning ? .green : .secondary)
-          }
-          if let msg = store.status?.lastMessage, !msg.isEmpty {
-            Text(msg)
+        Section {
+          DisclosureGroup(
+            isExpanded: $isQuickStartExpanded,
+            content: {
+              let showLANHint = (store.localNetworkAccess?.loopbackOK == true) && (store.localNetworkAccess?.lanOK == false)
+              let usage = store.status?.tokenUsage
+              let showUsage = (usage?.requests ?? 0) > 0 || (usage?.totalTokens ?? 0) > 0
+              let lastMessage = store.status?.lastMessage ?? ""
+              let connectionErr = store.connectionError ?? ""
+              let actionErr = store.lastActionError ?? ""
+              let showStatusPanel = showLANHint || showUsage || !lastMessage.isEmpty || !connectionErr.isEmpty || !actionErr.isEmpty
+
+              if showStatusPanel {
+                VStack(alignment: .leading, spacing: 10) {
+                  if showLANHint, let net = store.localNetworkAccess {
+                    VStack(alignment: .leading, spacing: 6) {
+                      Text("Wi‑Fi unreachable")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+
+                      Text(
+                        String(
+                          format: NSLocalizedString(
+                            "Runner (WebDriverAgentRunner-Runner) is reachable on 127.0.0.1 but not on Wi‑Fi (%@). Enable Wireless Data for Runner in iPhone Settings, then reopen Runner.",
+                            comment: ""
+                          ),
+                          net.wifiIPv4
+                        )
+                      )
+                      .font(.footnote)
+                      .foregroundStyle(.secondary)
+
+                      Button("Re-check") {
+                        Task { await store.checkLocalNetworkAccess(force: true) }
+                      }
+                      .font(.footnote)
+                    }
+                    .padding(.vertical, 2)
+                  }
+
+                  if showUsage, let usage {
+                    VStack(alignment: .leading, spacing: 6) {
+                      Text("Token Usage")
+                        .font(.headline)
+
+                      VStack(alignment: .leading, spacing: 2) {
+                        Text(String(format: NSLocalizedString("Requests: %d", comment: ""), usage.requests))
+                        Text(
+                          String(
+                            format: NSLocalizedString("Input: %d  Output: %d", comment: ""),
+                            usage.inputTokens,
+                            usage.outputTokens
+                          )
+                        )
+                        Text(
+                          String(
+                            format: NSLocalizedString("Cached: %d  Total: %d", comment: ""),
+                            usage.cachedTokens,
+                            usage.totalTokens
+                          )
+                        )
+                      }
+                      .font(.system(.footnote, design: .monospaced))
+                      .foregroundStyle(.secondary)
+                      .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 2)
+                  }
+
+                  if !lastMessage.isEmpty {
+                    Text(lastMessage)
+                      .font(.footnote)
+                      .foregroundStyle(.secondary)
+                  }
+                  if !connectionErr.isEmpty {
+                    Text(String(format: NSLocalizedString("Connection error: %@", comment: ""), connectionErr))
+                      .font(.footnote)
+                      .foregroundStyle(.red)
+                  }
+                  if !actionErr.isEmpty {
+                    Text(String(format: NSLocalizedString("Execution error: %@", comment: ""), actionErr))
+                      .font(.footnote)
+                      .foregroundStyle(.red)
+                  }
+                }
+              }
+              Button("Edit Task") { isEditingTask = true }
+              if !store.draft.task.isEmpty {
+                Text(store.draft.task)
+                  .font(.footnote)
+                  .lineLimit(6)
+              }
+
+              let errors = store.validationErrors()
+              if !errors.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                  ForEach(errors, id: \.self) { e in
+                    Text(e).foregroundStyle(.red)
+                  }
+                }
+              }
+
+              Button("Start") {
+                Task { await store.startAgent() }
+              }
+              .disabled(!store.validationErrors().isEmpty)
+
+              Button("Stop", role: .destructive) {
+                Task { await store.stopAgent() }
+              }
+              .disabled(!isRunning)
+
+              if showLANHint {
+                Text("Tip: If Runner was just installed or updated, iOS may reset its Wireless Data to Off. Re-enable it in Settings if Wi‑Fi access fails.")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+              } else {
+                Text("Tip: If Runner (WebDriverAgentRunner-Runner) was just installed or updated, iOS may reset its Wireless Data to Off. Re-enable it in Settings if Wi‑Fi access fails.")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+              }
+            },
+            label: {
+              HStack(spacing: 10) {
+                Text("Run")
+                  .font(.headline)
+                Spacer()
+                Text(isRunning ? "Running" : "Stopped")
+                  .foregroundStyle(isRunning ? .green : .secondary)
+              }
+            }
+          )
+        }
+
+        Section {
+          DisclosureGroup("System Prompt", isExpanded: $isPromptExpanded) {
+            Toggle("Use custom system prompt", isOn: $store.draft.useCustomSystemPrompt)
+
+            Text("Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):")
               .font(.footnote)
               .foregroundStyle(.secondary)
-          }
-          if let err = store.connectionError, !err.isEmpty {
-            Text("Connection: \(err)")
-              .font(.footnote)
-              .foregroundStyle(.red)
-          }
-          if let err = store.lastActionError, !err.isEmpty {
-            Text("Action: \(err)")
-              .font(.footnote)
-              .foregroundStyle(.red)
-          }
-        }
 
-        Section("Connection") {
-          TextField("http://127.0.0.1:8100", text: $store.wdaURL)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.system(.body, design: .monospaced))
-          Button("Refresh") {
-            Task { await store.refresh() }
-          }
-        }
-
-        Section("Model") {
-          TextField("Base URL (OpenAI-compatible)", text: $store.draft.baseUrl)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.system(.body, design: .monospaced))
-
-          TextField("Model", text: $store.draft.model)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.system(.body, design: .monospaced))
-
-          Picker("API Mode", selection: $store.draft.apiMode) {
-            Text("Responses (stateful)").tag(ConsoleStore.Defaults.apiMode)
-            Text("Chat Completions").tag("chat_completions")
-          }
-        }
-
-        Section("API Key") {
-          if store.draft.showApiKey {
-            TextField(store.status?.config.apiKeySet == true ? "(set on device)" : "sk-...", text: $store.draft.apiKey)
-              .textInputAutocapitalization(.never)
-              .autocorrectionDisabled()
-              .font(.system(.body, design: .monospaced))
-          } else {
-            SecureField(store.status?.config.apiKeySet == true ? "(set on device)" : "sk-...", text: $store.draft.apiKey)
-              .textInputAutocapitalization(.never)
-              .autocorrectionDisabled()
-              .font(.system(.body, design: .monospaced))
-          }
-
-          Toggle("Show API key", isOn: $store.draft.showApiKey)
-          Toggle("Remember API key on device", isOn: $store.draft.rememberApiKey)
-        }
-
-        Section("Task") {
-          Button("Edit Task") { isEditingTask = true }
-          if !store.draft.task.isEmpty {
-            Text(store.draft.task)
-              .font(.footnote)
-              .lineLimit(6)
-          }
-        }
-
-        Section("Limits") {
-          LimitField(
-            title: "Max Steps",
-            help: "Hard stop after this many actions. Prevents runaway loops.",
-            text: $store.draft.maxSteps,
-            keyboard: .numberPad
-          )
-
-          LimitField(
-            title: "Timeout (seconds)",
-            help: "Per-step model request timeout. Increase if the model is slow.",
-            text: $store.draft.timeoutSeconds,
-            keyboard: .decimalPad
-          )
-
-          LimitField(
-            title: "Step Delay (seconds)",
-            help: "Sleep between executed actions. Increase to reduce flakiness.",
-            text: $store.draft.stepDelaySeconds,
-            keyboard: .decimalPad
-          )
-
-          let tokensTitle = (store.draft.apiMode == ConsoleStore.Defaults.apiMode) ? "Max Output Tokens" : "Max Completion Tokens"
-          let tokensHelp = (store.draft.apiMode == ConsoleStore.Defaults.apiMode)
-            ? "Responses API: max_output_tokens. Larger lets the model think/plan longer."
-            : "Chat Completions: max_completion_tokens. Larger lets the model think/plan longer."
-          LimitField(
-            title: tokensTitle,
-            help: tokensHelp,
-            text: $store.draft.maxCompletionTokens,
-            keyboard: .numberPad
-          )
-        }
-
-        Section("System Prompt") {
-          Toggle("Use custom system prompt", isOn: $store.draft.useCustomSystemPrompt)
-          Button("Edit System Prompt") {
-            Task {
-              await store.refresh()
-              isEditingSystemPrompt = true
+            VStack(alignment: .leading, spacing: 2) {
+              Text("{{DATE_ZH}} -> \(ConsoleStore.datePlaceholderZH())")
+              Text("{{DATE_EN}} -> \(ConsoleStore.datePlaceholderEN())")
             }
-          }
-          if !store.draft.systemPrompt.isEmpty {
-            Text(store.draft.systemPrompt)
-              .font(.footnote)
-              .lineLimit(6)
-          }
-        }
+            .font(.system(.footnote, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
 
-        Section("Advanced") {
-          TextField("Reasoning effort (optional)", text: $store.draft.reasoningEffort)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.system(.body, design: .monospaced))
-
-          if store.isDoubaoSeedResponsesMode() {
-            Toggle("Enable Session Cache (Doubao Seed)", isOn: $store.draft.doubaoSeedEnableSessionCache)
-          }
-
-          Toggle("Debug raw conversation", isOn: $store.draft.debugLogRawAssistant)
-          Toggle("Insecure: skip TLS verify (model)", isOn: $store.draft.insecureSkipTLSVerify)
-        }
-
-        let errors = store.validationErrors()
-        if !errors.isEmpty {
-          Section("Validation") {
-            ForEach(errors, id: \.self) { e in
-              Text(e).foregroundStyle(.red)
+            Button("Edit System Prompt") {
+              Task {
+                await store.refresh()
+                isEditingSystemPrompt = true
+              }
+            }
+            if !store.draft.systemPrompt.isEmpty {
+              Text(store.draft.systemPrompt)
+                .font(.footnote)
+                .lineLimit(6)
             }
           }
         }
 
         Section {
-          Button("Import Config (QR)") {
-            isImportingConfig = true
-          }
+          DisclosureGroup("Model service", isExpanded: $isModelExpanded) {
+            ConfigField(
+              title: "Base URL (OpenAI-compatible)",
+              help: "Required. Examples: Doubao `https://ark.cn-beijing.volces.com/api/v3/responses`; OpenAI `https://api.openai.com/v1`.",
+              placeholder: "https://…",
+              text: $store.draft.baseUrl,
+              keyboard: .URL
+            )
 
-          Button("Export Config (QR)") {
-            isExportingConfig = true
-          }
-          .disabled(!store.validationErrors().isEmpty)
+            ConfigField(
+              title: "Model",
+              help: "Required. Example: doubao-seed-1-8-251228.",
+              placeholder: "doubao-seed-…",
+              text: $store.draft.model,
+              keyboard: .default
+            )
 
-          Button("Save Config") {
-            Task { await store.saveConfig() }
-          }
-          .disabled(!store.validationErrors().isEmpty)
+            ConfigPicker(
+              title: "API Mode",
+              help: (store.draft.apiMode == ConsoleStore.Defaults.apiMode)
+                ? "Doubao Seed: use Responses. Most OpenAI-compatible: try Responses first; if unsupported, switch to Chat Completions."
+                : "Use Chat Completions when Responses is unsupported. More compatible, but usually uses more tokens.",
+              selection: $store.draft.apiMode,
+              options: [
+                ("Responses", ConsoleStore.Defaults.apiMode),
+                ("Chat Completions", "chat_completions"),
+              ]
+            )
 
-          Button("Start") {
-            Task { await store.startAgent() }
-          }
-          .disabled(!store.validationErrors().isEmpty)
+            VStack(alignment: .leading, spacing: 6) {
+              Text("API Key")
+                .font(.headline)
 
-          Button("Stop", role: .destructive) {
-            Task { await store.stopAgent() }
-          }
-          .disabled(!isRunning)
+              if store.draft.showApiKey {
+                TextField(store.status?.config.apiKeySet == true ? "(set on device)" : "sk-...", text: $store.draft.apiKey)
+                  .textInputAutocapitalization(.never)
+                  .autocorrectionDisabled()
+                  .font(.system(.body, design: .monospaced))
+              } else {
+                SecureField(store.status?.config.apiKeySet == true ? "(set on device)" : "sk-...", text: $store.draft.apiKey)
+                  .textInputAutocapitalization(.never)
+                  .autocorrectionDisabled()
+                  .font(.system(.body, design: .monospaced))
+              }
 
-          Button("Reset Runtime", role: .destructive) {
-            Task { await store.resetRuntime() }
+              Text("Optional if already set on device. Leave empty to keep the existing key.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+
+            Toggle("Show API key", isOn: $store.draft.showApiKey)
+            Toggle("Remember API key on device", isOn: $store.draft.rememberApiKey)
+          }
+        }
+
+        Section {
+          DisclosureGroup("Limits & stability", isExpanded: $isLimitsExpanded) {
+            LimitField(
+              title: "Max Steps",
+              help: "Hard stop after this many actions. Prevents runaway loops.",
+              text: $store.draft.maxSteps,
+              keyboard: .numberPad
+            )
+
+            LimitField(
+              title: "Timeout (seconds)",
+              help: "Per-step model request timeout. Increase if the model is slow.",
+              text: $store.draft.timeoutSeconds,
+              keyboard: .decimalPad
+            )
+
+            LimitField(
+              title: "Step Delay (seconds)",
+              help: "Sleep between executed actions. Increase to reduce flakiness.",
+              text: $store.draft.stepDelaySeconds,
+              keyboard: .decimalPad
+            )
+
+            let tokensTitle: LocalizedStringKey =
+              (store.draft.apiMode == ConsoleStore.Defaults.apiMode) ? "Max Output Tokens" : "Max Completion Tokens"
+            let tokensHelp: LocalizedStringKey =
+              (store.draft.apiMode == ConsoleStore.Defaults.apiMode)
+              ? "Per-step output cap (Responses: max_output_tokens). Does not limit screenshot/input tokens."
+              : "Per-step output cap (Chat: max_completion_tokens). Does not limit screenshot/input tokens."
+            LimitField(
+              title: tokensTitle,
+              help: tokensHelp,
+              text: $store.draft.maxCompletionTokens,
+              keyboard: .numberPad
+            )
+
+            LimitField(
+              title: "Reasoning effort (optional)",
+              help: "Optional. Examples: minimal / low / medium / high.",
+              text: $store.draft.reasoningEffort,
+              keyboard: .default
+            )
+          }
+        }
+
+        Section {
+          DisclosureGroup("Advanced (optional)", isExpanded: $isAdvancedExpanded) {
+            if store.isDoubaoSeedResponsesMode() {
+              Toggle("Enable Session Cache (Doubao Seed)", isOn: $store.draft.doubaoSeedEnableSessionCache)
+              Text("Responses only. Enables session caching for doubao-seed models to reduce tokens and improve stability.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+
+            Toggle("Half-resolution screenshots", isOn: $store.draft.halfResScreenshot)
+            Text("Downscales screenshots before sending to the model, reducing token usage and often speeding up responses.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Toggle("Use W3C actions for swipe", isOn: $store.draft.useW3CActionsForSwipe)
+            Text("Recommended for games: makes swipe closer to a real finger gesture.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Toggle("Annotate screenshots with actions", isOn: $store.annotateStepScreenshots)
+            Text("Overlays Tap/Swipe markers on per-step screenshots in Chat.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Toggle("Debug raw conversation", isOn: $store.draft.debugLogRawAssistant)
+            Text("Stores per-step API request/response JSON (images are placeholders). May contain sensitive info.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Toggle("Insecure: skip TLS verify (model)", isOn: $store.draft.insecureSkipTLSVerify)
+            Text("Allows HTTPS endpoints with invalid certificates. Debug only.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Button("Import Config (QR)") {
+              isImportingConfig = true
+            }
+            Text("Scans a QR code and shows a review step before applying changes.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Button("Export Config (QR)") {
+              isExportingConfig = true
+            }
+            .disabled(!store.validationErrors().isEmpty)
+            Text("Exports the current config as a QR code image for sharing or backup.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+
+            Button("Save Config") {
+              Task { await store.saveConfig() }
+            }
+            .disabled(!store.validationErrors().isEmpty)
+            Text("Saves the current config to Runner (persistent on device).")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+          }
+        }
+
+        Section {
+          DisclosureGroup("Runner", isExpanded: $isRunnerExpanded) {
+            ConfigField(
+              title: "Runner URL",
+              help: "Where this Console connects to Runner (port 8100). On iPhone, use http://127.0.0.1:8100.",
+              placeholder: ConsoleStore.Defaults.wdaURL,
+              text: $store.wdaURL,
+              keyboard: .URL
+            )
+
+            Button("Refresh Status") {
+              Task { await store.refresh() }
+            }
+          }
+        }
+
+        Section {
+          DisclosureGroup("Reset", isExpanded: $isDangerExpanded) {
+            Text(
+              "Reset clears local runtime data (logs/chat/screenshots/Notes/token usage); Factory Reset also clears saved settings and the remembered API key; neither affects your model service."
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 14) {
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Reset Runtime")
+                  .font(.headline)
+
+                Text("Stops the agent and clears logs/chat/screenshots/notes/token usage. Keeps saved config.")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+
+                Button("Reset Runtime", role: .destructive) {
+                  Task { await store.resetRuntime() }
+                }
+              }
+
+              Divider()
+
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Factory Reset")
+                  .font(.headline)
+
+                Text("Stops the agent, clears runtime, and restores Runner config to defaults (forgets API key, custom prompt, and other saved settings).")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+
+                Button("Factory Reset", role: .destructive) {
+                  Task { await store.factoryReset() }
+                }
+              }
+            }
+            .padding(.vertical, 2)
           }
         }
       }
       .navigationTitle("On‑Device Agent")
       .scrollDismissesKeyboard(.interactively)
+      .task {
+        await store.checkLocalNetworkAccess(force: true)
+      }
       .toolbar {
         ToolbarItemGroup(placement: .keyboard) {
           Spacer()
@@ -341,8 +482,8 @@ private struct ControlView: View {
 }
 
 private struct LimitField: View {
-  let title: String
-  let help: String
+  let title: LocalizedStringKey
+  let help: LocalizedStringKey
   @Binding var text: String
   let keyboard: UIKeyboardType
 
@@ -366,6 +507,62 @@ private struct LimitField: View {
   }
 }
 
+private struct ConfigField: View {
+  let title: LocalizedStringKey
+  let help: LocalizedStringKey
+  let placeholder: String
+  @Binding var text: String
+  let keyboard: UIKeyboardType
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(title)
+        .font(.headline)
+
+      TextField(placeholder, text: $text)
+        .keyboardType(keyboard)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .font(.system(.body, design: .monospaced))
+
+      Text(help)
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 2)
+  }
+}
+
+private struct ConfigPicker: View {
+  typealias Option = (title: LocalizedStringKey, value: String)
+
+  let title: LocalizedStringKey
+  let help: LocalizedStringKey?
+  @Binding var selection: String
+  let options: [Option]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(title)
+        .font(.headline)
+
+      Picker("", selection: $selection) {
+        ForEach(options, id: \.value) { opt in
+          Text(opt.title).tag(opt.value)
+        }
+      }
+      .pickerStyle(.segmented)
+
+      if let help {
+        Text(help)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .padding(.vertical, 2)
+  }
+}
+
 private struct LogsView: View {
   @EnvironmentObject private var store: ConsoleStore
 
@@ -374,7 +571,7 @@ private struct LogsView: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 8) {
           if let err = store.logsError, !err.isEmpty {
-            Text("Logs stale: \(err)")
+            Text(String(format: NSLocalizedString("Logs stale: %@", comment: ""), err))
               .font(.footnote)
               .foregroundStyle(.red)
           }
@@ -390,19 +587,254 @@ private struct LogsView: View {
   }
 }
 
+// MARK: - Chat export (HTML)
+
+private struct ChatExportTokenUsage: Sendable {
+  var requests: Int
+  var inputTokens: Int
+  var outputTokens: Int
+  var cachedTokens: Int
+  var totalTokens: Int
+}
+
+private struct ChatExportItem: Sendable {
+  var kind: String
+  var ts: String
+  var step: Int
+  var attempt: Int?
+  var raw: String
+  var text: String
+  var content: String
+  var reasoning: String
+}
+
+private struct ChatExportActionAnnotation: Sendable {
+  enum Kind: String, Sendable {
+    case tap
+    case swipe
+    case label
+  }
+
+  var name: String
+  var kind: Kind
+  var x1: Double
+  var y1: Double
+  var x2: Double
+  var y2: Double
+}
+
+private struct ChatExportHTMLSnapshot: Sendable {
+  var exportedAt: String
+  var runnerURL: String
+  var annotate: Bool
+  var tokenUsage: ChatExportTokenUsage?
+  var configText: String
+  var notes: String
+  var items: [ChatExportItem]
+  var screenshotsPNG: [Int: Data]
+  var annotationsByStep: [Int: ChatExportActionAnnotation]
+}
+
+private enum ChatExportHTML {
+  static func build(snapshot: ChatExportHTMLSnapshot) -> String {
+    func esc(_ s: String) -> String {
+      var out = s
+      out = out.replacingOccurrences(of: "&", with: "&amp;")
+      out = out.replacingOccurrences(of: "<", with: "&lt;")
+      out = out.replacingOccurrences(of: ">", with: "&gt;")
+      out = out.replacingOccurrences(of: "\"", with: "&quot;")
+      return out
+    }
+
+    func svgOverlay(for annotation: ChatExportActionAnnotation) -> String? {
+      switch annotation.kind {
+      case .tap:
+        let x = max(0, min(1000, annotation.x1))
+        let y = max(0, min(1000, annotation.y1))
+        return """
+        <svg class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+          <circle cx="\(x)" cy="\(y)" r="22" fill="rgba(255,0,0,0.18)"></circle>
+          <circle cx="\(x)" cy="\(y)" r="22" fill="none" stroke="#ff3b30" stroke-width="4"></circle>
+          <circle cx="\(x)" cy="\(y)" r="6" fill="#ff3b30"></circle>
+        </svg>
+        """
+
+      case .swipe:
+        let sx = max(0, min(1000, annotation.x1))
+        let sy = max(0, min(1000, annotation.y1))
+        let ex = max(0, min(1000, annotation.x2))
+        let ey = max(0, min(1000, annotation.y2))
+        let dx = ex - sx
+        let dy = ey - sy
+        let angle = atan2(dy, dx)
+        let length: Double = 28
+        let spread: Double = 0.55
+        let p1x = ex - length * cos(angle - spread)
+        let p1y = ey - length * sin(angle - spread)
+        let p2x = ex - length * cos(angle + spread)
+        let p2y = ey - length * sin(angle + spread)
+        return """
+        <svg class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+          <line x1="\(sx)" y1="\(sy)" x2="\(ex)" y2="\(ey)" stroke="#ff3b30" stroke-width="6" stroke-linecap="round"></line>
+          <circle cx="\(sx)" cy="\(sy)" r="6" fill="#ff3b30"></circle>
+          <line x1="\(ex)" y1="\(ey)" x2="\(p1x)" y2="\(p1y)" stroke="#ff3b30" stroke-width="6" stroke-linecap="round"></line>
+          <line x1="\(ex)" y1="\(ey)" x2="\(p2x)" y2="\(p2y)" stroke="#ff3b30" stroke-width="6" stroke-linecap="round"></line>
+        </svg>
+        """
+
+      case .label:
+        return nil
+      }
+    }
+
+    var parts: [String] = []
+    parts.append("""
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>On-device agent chat export</title>
+      <style>
+        :root {
+          color-scheme: light dark;
+          --bg: #0b0b0c;
+          --fg: #f5f5f7;
+          --muted: rgba(255,255,255,0.72);
+          --card: rgba(255,255,255,0.06);
+          --border: rgba(255,255,255,0.12);
+          --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+        @media (prefers-color-scheme: light) {
+          :root {
+            --bg: #ffffff;
+            --fg: #111111;
+            --muted: rgba(0,0,0,0.64);
+            --card: rgba(0,0,0,0.04);
+            --border: rgba(0,0,0,0.12);
+          }
+        }
+        body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .wrap { max-width: 920px; margin: 0 auto; padding: 20px 16px 48px; }
+        h1 { margin: 0 0 6px; font-size: 20px; }
+        .meta { color: var(--muted); font-size: 13px; line-height: 1.45; }
+        .card { margin-top: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+        pre { margin: 8px 0 0; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(0,0,0,0.12); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+        details { margin-top: 8px; }
+        summary { cursor: pointer; color: var(--muted); }
+        .item { margin-top: 14px; }
+        .hdr { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+        .hdr .k { font-weight: 600; }
+        .hdr .ts { color: var(--muted); font-size: 12px; }
+        .shot { position: relative; display: inline-block; max-width: 100%; margin-top: 8px; }
+        .shot img { display: block; max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border); }
+        .overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+        .badge { position: absolute; top: 10px; left: 10px; font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 9px; background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.12); }
+        .sec { margin-top: 10px; }
+        .label { font-size: 12px; color: var(--muted); margin-top: 8px; }
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <h1>Chat export</h1>
+        <div class="meta">Exported at <span class="mono">\(esc(snapshot.exportedAt))</span></div>
+        <div class="meta">Runner URL <span class="mono">\(esc(snapshot.runnerURL.isEmpty ? "(empty)" : snapshot.runnerURL))</span></div>
+        <div class="meta">Screenshot annotations \(snapshot.annotate ? "enabled" : "disabled")</div>
+    """)
+
+    if let usage = snapshot.tokenUsage {
+      parts.append("""
+        <div class="card">
+          <div class="meta">Token usage</div>
+          <pre>\(esc("requests: \(usage.requests)\ninput_tokens: \(usage.inputTokens)\noutput_tokens: \(usage.outputTokens)\ncached_tokens: \(usage.cachedTokens)\ntotal_tokens: \(usage.totalTokens)"))</pre>
+        </div>
+      """)
+    }
+
+    if !snapshot.configText.isEmpty {
+      parts.append("""
+        <div class="card">
+          <div class="meta">Config (api_key excluded)</div>
+          <pre>\(esc(snapshot.configText))</pre>
+        </div>
+      """)
+    }
+
+    if !snapshot.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      parts.append("""
+        <div class="card">
+          <div class="meta">Notes</div>
+          <pre>\(esc(snapshot.notes))</pre>
+        </div>
+      """)
+    }
+
+    parts.append("<div class=\"card\"><div class=\"meta\">Messages</div></div>")
+
+    for it in snapshot.items {
+      let step = it.step
+      let kind = it.kind.uppercased()
+      let attempt = it.attempt
+      let ts = it.ts
+
+      var hdrParts: [String] = []
+      hdrParts.append("Step \(step) · \(kind)")
+      if let attempt { hdrParts.append("(attempt \(attempt))") }
+
+      parts.append("<div class=\"item\">")
+      parts.append("<div class=\"hdr\"><div class=\"k\">\(esc(hdrParts.joined(separator: " ")))</div>")
+      if !ts.isEmpty {
+        parts.append("<div class=\"ts\">\(esc(ts))</div>")
+      }
+      parts.append("</div>")
+
+      if it.kind == "request", attempt == nil, let png = snapshot.screenshotsPNG[step] {
+        let b64 = png.base64EncodedString()
+        parts.append("<div class=\"shot\">")
+        parts.append("<img src=\"data:image/png;base64,\(b64)\" alt=\"step \(step) screenshot\" />")
+        if snapshot.annotate,
+           let ann = snapshot.annotationsByStep[step],
+           let svg = svgOverlay(for: ann)
+        {
+          parts.append(svg)
+          parts.append("<div class=\"badge\">\(esc(ann.name))</div>")
+        }
+        parts.append("</div>")
+      }
+
+      if !it.text.isEmpty {
+        parts.append("<div class=\"sec\"><div class=\"label\">text</div><pre>\(esc(it.text))</pre></div>")
+      }
+      if !it.content.isEmpty {
+        parts.append("<div class=\"sec\"><div class=\"label\">content</div><pre>\(esc(it.content))</pre></div>")
+      }
+      if !it.reasoning.isEmpty {
+        parts.append("<div class=\"sec\"><div class=\"label\">reasoning</div><pre>\(esc(it.reasoning))</pre></div>")
+      }
+
+      if !it.raw.isEmpty {
+        parts.append("<details class=\"sec\"><summary>Raw</summary><pre>\(esc(it.raw))</pre></details>")
+      }
+
+      parts.append("</div>")
+    }
+
+    parts.append("""
+      </div>
+    </body>
+    </html>
+    """)
+    return parts.joined(separator: "\n")
+  }
+}
+
 private struct ChatView: View {
   @EnvironmentObject private var store: ConsoleStore
   @State private var isSharing = false
   @State private var shareURL: URL?
   @State private var exportError: String?
-
-  private var effectiveSystemPrompt: String {
-    guard let cfg = store.status?.config else { return "" }
-    if cfg.useCustomSystemPrompt && !cfg.systemPrompt.isEmpty {
-      return cfg.systemPrompt
-    }
-    return cfg.defaultSystemPrompt
-  }
+  @State private var isExporting = false
+  @State private var exportProgressText: String?
 
   var body: some View {
     NavigationStack {
@@ -417,7 +849,7 @@ private struct ChatView: View {
         }
 
         if let err = store.chatError, !err.isEmpty {
-          Text("Chat stale: \(err)")
+          Text(String(format: NSLocalizedString("Chat stale: %@", comment: ""), err))
             .font(.footnote)
             .foregroundStyle(.red)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -425,11 +857,24 @@ private struct ChatView: View {
             .padding(.vertical, 8)
         }
 
-        List(store.chatItems) { item in
-          VStack(alignment: .leading, spacing: 6) {
-            HStack {
-              Text("Step \(item.step ?? 0) · \(item.kind)")
-                .font(.headline)
+        if isExporting {
+          HStack(spacing: 10) {
+            ProgressView()
+            Text(exportProgressText ?? NSLocalizedString("Exporting…", comment: ""))
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+            Spacer()
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 8)
+        }
+
+		        List(store.chatItems) { item in
+		          VStack(alignment: .leading, spacing: 6) {
+	            HStack {
+	              Text(String(format: NSLocalizedString("Step %d · %@", comment: ""), item.step ?? 0, item.kind))
+	                .font(.headline)
               if let attempt = item.attempt {
                 Text("(\(attempt))").foregroundStyle(.secondary)
               }
@@ -439,103 +884,141 @@ private struct ChatView: View {
               }
             }
 
-            if store.chatMode == .raw {
-              if item.kind == "system" {
-                Text(effectiveSystemPrompt)
-                  .font(.system(.footnote, design: .monospaced))
-                  .textSelection(.enabled)
-              } else {
-                Text(item.raw ?? "")
+            if store.chatMode == .rawJSON {
+              Text(item.raw ?? "")
+                .font(.system(.footnote, design: .monospaced))
+                .textSelection(.enabled)
+            } else {
+              if item.kind == "request", item.attempt == nil, let step = item.step {
+                if let img = store.stepScreenshots[step] {
+                  AnnotatedScreenshotCard(
+                    image: img,
+                    annotation: store.annotateStepScreenshots ? store.stepActionAnnotations[step] : nil
+                  )
+                } else if let err = store.stepScreenshotErrors[step], !err.isEmpty {
+                  HStack(alignment: .top, spacing: 10) {
+                    Text(err)
+                      .font(.footnote)
+                      .foregroundStyle(.red)
+                    Spacer()
+                    Button("Retry") {
+                      Task { await store.ensureStepScreenshotLoaded(step: step) }
+                    }
+                  }
+                } else {
+                  HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading screenshot…")
+                      .font(.footnote)
+                      .foregroundStyle(.secondary)
+                    Spacer()
+                  }
+                  .task {
+                    await store.ensureStepScreenshotLoaded(step: step)
+                  }
+                }
+              }
+              if let text = item.text, !text.isEmpty {
+                Text(text)
                   .font(.system(.footnote, design: .monospaced))
                   .textSelection(.enabled)
               }
-            } else {
-              if item.kind == "system" {
-                Text(effectiveSystemPrompt)
+              if let content = item.content, !content.isEmpty {
+                Text(content)
                   .font(.system(.footnote, design: .monospaced))
                   .textSelection(.enabled)
-              } else {
-                if let text = item.text, !text.isEmpty {
-                  Text(text)
-                    .font(.system(.footnote, design: .monospaced))
-                    .textSelection(.enabled)
-                }
-                if let content = item.content, !content.isEmpty {
-                  Text(content)
-                    .font(.system(.footnote, design: .monospaced))
-                    .textSelection(.enabled)
-                }
-                if let reasoning = item.reasoning, !reasoning.isEmpty {
-                  Divider()
-                  Text(reasoning)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                }
+              }
+              if let reasoning = item.reasoning, !reasoning.isEmpty {
+                Divider()
+                Text(reasoning)
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
               }
             }
           }
           .padding(.vertical, 4)
         }
-        .toolbar {
+	        .toolbar {
           ToolbarItem(placement: .navigationBarLeading) {
-            Picker("Mode", selection: $store.chatMode) {
+            Picker("View", selection: $store.chatMode) {
               ForEach(ConsoleStore.ChatMode.allCases) { m in
                 Text(m.title).tag(m)
               }
             }
           }
           ToolbarItem(placement: .navigationBarTrailing) {
-            Button("Export") {
-              exportChat()
+            Menu {
+                Button("Export readable text (.txt)") { exportChat(.messageText) }
+                Button("Export raw JSONL (.jsonl)") { exportChat(.rawJSONL) }
+                Button("Export HTML report (.html)") { exportChat(.htmlReport) }
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
             }
+              .disabled(isExporting)
           }
-        }
-      }
-      .navigationTitle("Chat")
+	        }
+	      }
+	      .navigationTitle("Chat")
     }
     .sheet(isPresented: $isSharing) {
       if let url = shareURL {
         OnDeviceAgentActivityView(activityItems: [url])
       }
-    }
-  }
+	    }
+	  }
 
-  private func exportChat() {
-    exportError = nil
-    do {
-      let content: String
-      let ext: String
-      switch store.chatMode {
-      case .message:
-        content = exportChatMessageText()
-        ext = "txt"
-      case .raw:
-        content = exportChatRawJSONL()
-        ext = "jsonl"
+    private enum ChatExportFormat {
+      case messageText
+      case rawJSONL
+      case htmlReport
+    }
+
+	  private func exportChat(_ format: ChatExportFormat) {
+      if isExporting { return }
+	    exportError = nil
+      exportProgressText = nil
+      isExporting = true
+      Task {
+        defer {
+          exportProgressText = nil
+          isExporting = false
+        }
+        do {
+          let ts = Int(Date().timeIntervalSince1970)
+          let url: URL
+          switch format {
+          case .messageText:
+            url = try OnDeviceAgentWriteTempText(exportChatMessageText(), filename: "agent_chat_\(ts).txt")
+          case .rawJSONL:
+            url = try OnDeviceAgentWriteTempText(exportChatRawJSONL(), filename: "agent_chat_\(ts).jsonl")
+          case .htmlReport:
+            exportProgressText = NSLocalizedString("Preparing screenshots…", comment: "")
+            await prefetchStepScreenshotsForExport()
+            exportProgressText = NSLocalizedString("Building HTML…", comment: "")
+            let snapshot = buildChatHTMLSnapshot()
+            let html = await Task.detached(priority: .userInitiated) {
+              ChatExportHTML.build(snapshot: snapshot)
+            }.value
+            url = try OnDeviceAgentWriteTempText(html, filename: "agent_chat_\(ts).html")
+          }
+          shareURL = url
+          isSharing = true
+        } catch {
+          exportError = error.localizedDescription
+        }
       }
-      let ts = Int(Date().timeIntervalSince1970)
-      let url = try OnDeviceAgentWriteTempText(content, filename: "agent_chat_\(ts).\(ext)")
-      shareURL = url
-      isSharing = true
-    } catch {
-      exportError = error.localizedDescription
-    }
-  }
+	  }
 
-  private func exportChatMessageText() -> String {
-    var out: [String] = []
+	  private func exportChatMessageText() -> String {
+	    var out: [String] = []
     for item in store.chatItems {
       out.append(exportHeader(for: item))
-      if item.kind == "system" {
-        out.append(effectiveSystemPrompt)
-      } else {
-        if let text = item.text, !text.isEmpty { out.append(text) }
-        if let content = item.content, !content.isEmpty { out.append(content) }
-        if let reasoning = item.reasoning, !reasoning.isEmpty {
-          out.append("\n--- reasoning ---\n")
-          out.append(reasoning)
-        }
+      if let text = item.text, !text.isEmpty { out.append(text) }
+      if let content = item.content, !content.isEmpty { out.append(content) }
+      if let reasoning = item.reasoning, !reasoning.isEmpty {
+        out.append("\n--- reasoning ---\n")
+        out.append(reasoning)
       }
       out.append("\n")
     }
@@ -549,10 +1032,6 @@ private struct ChatView: View {
       if let ts = item.ts, !ts.isEmpty { obj["ts"] = ts }
       if let step = item.step { obj["step"] = step }
       if let attempt = item.attempt { obj["attempt"] = attempt }
-
-      if item.kind == "system" {
-        obj["system_prompt"] = effectiveSystemPrompt
-      }
       if let raw = item.raw, !raw.isEmpty { obj["raw"] = raw }
       if let text = item.text, !text.isEmpty { obj["text"] = text }
       if let content = item.content, !content.isEmpty { obj["content"] = content }
@@ -572,12 +1051,164 @@ private struct ChatView: View {
     if let ts = item.ts, !ts.isEmpty {
       parts.append(ts)
     }
-    parts.append("Step \(item.step ?? 0) \(item.kind.uppercased())")
+    parts.append(
+      String(
+        format: NSLocalizedString("Step %d %@", comment: ""),
+        item.step ?? 0,
+        item.kind.uppercased()
+      )
+    )
     if let attempt = item.attempt {
-      parts.append("(attempt \(attempt))")
+      parts.append(String(format: NSLocalizedString("(attempt %d)", comment: ""), attempt))
     }
-    return parts.joined(separator: " ")
-  }
+	    return parts.joined(separator: " ")
+	  }
+
+    private func prefetchStepScreenshotsForExport() async {
+      let steps: [Int] = {
+        var s: Set<Int> = []
+        for it in store.chatItems {
+          if it.kind == "request", it.attempt == nil, let step = it.step {
+            s.insert(step)
+          }
+        }
+        return s.sorted()
+      }()
+
+      let total = steps.count
+      if total == 0 {
+        return
+      }
+      var loaded = 0
+      for step in steps {
+        exportProgressText = String(
+          format: NSLocalizedString("Preparing screenshots… %d/%d", comment: ""),
+          loaded,
+          total
+        )
+        await store.ensureStepScreenshotLoaded(step: step)
+        loaded += 1
+      }
+      exportProgressText = String(
+        format: NSLocalizedString("Preparing screenshots… %d/%d", comment: ""),
+        total,
+        total
+      )
+    }
+
+    private func buildChatHTMLSnapshot() -> ChatExportHTMLSnapshot {
+      let exportedAt = ISO8601DateFormatter().string(from: Date())
+      let runnerURL = store.wdaURL.trimmingCharacters(in: .whitespacesAndNewlines)
+      let annotate = store.annotateStepScreenshots
+
+      let cfgText: String = {
+        guard let c = store.status?.config else { return "" }
+        var lines: [String] = []
+        if !c.baseUrl.isEmpty { lines.append("base_url: \(c.baseUrl)") }
+        if !c.model.isEmpty { lines.append("model: \(c.model)") }
+        if !c.apiMode.isEmpty { lines.append("api_mode: \(c.apiMode)") }
+        if c.maxSteps > 0 { lines.append("max_steps: \(c.maxSteps)") }
+        if c.maxCompletionTokens > 0 { lines.append("max_completion_tokens: \(c.maxCompletionTokens)") }
+        if c.timeoutSeconds > 0 { lines.append("timeout_seconds: \(c.timeoutSeconds)") }
+        if c.stepDelaySeconds > 0 { lines.append("step_delay_seconds: \(c.stepDelaySeconds)") }
+        if !c.reasoningEffort.isEmpty { lines.append("reasoning_effort: \(c.reasoningEffort)") }
+        lines.append("half_res_screenshot: \(c.halfResScreenshot ? "true" : "false")")
+        lines.append("use_w3c_actions_for_swipe: \(c.useW3CActionsForSwipe ? "true" : "false")")
+        lines.append("debug_log_raw_assistant: \(c.debugLogRawAssistant ? "true" : "false")")
+        lines.append("doubao_seed_enable_session_cache: \(c.doubaoSeedEnableSessionCache ? "true" : "false")")
+        lines.append("insecure_skip_tls_verify: \(c.insecureSkipTlsVerify ? "true" : "false")")
+        lines.append("use_custom_system_prompt: \(c.useCustomSystemPrompt ? "true" : "false")")
+        if !c.systemPrompt.isEmpty { lines.append("system_prompt: (set)") }
+        return lines.joined(separator: "\n")
+      }()
+
+      let tokenUsage: ChatExportTokenUsage? = {
+        guard let u = store.status?.tokenUsage else { return nil }
+        if u.requests == 0, u.totalTokens == 0 { return nil }
+        return ChatExportTokenUsage(
+          requests: u.requests,
+          inputTokens: u.inputTokens,
+          outputTokens: u.outputTokens,
+          cachedTokens: u.cachedTokens,
+          totalTokens: u.totalTokens
+        )
+      }()
+
+      let notes = store.status?.notes ?? ""
+
+      let items: [ChatExportItem] = store.chatItems.map { it in
+        ChatExportItem(
+          kind: it.kind,
+          ts: it.ts ?? "",
+          step: it.step ?? 0,
+          attempt: it.attempt,
+          raw: it.raw ?? "",
+          text: it.text ?? "",
+          content: it.content ?? "",
+          reasoning: it.reasoning ?? ""
+        )
+      }
+
+      let stepsNeedingScreenshots: Set<Int> = Set(
+        store.chatItems.compactMap { it in
+          if it.kind == "request", it.attempt == nil, let step = it.step { return step }
+          return nil
+        }
+      )
+      var screenshotsPNG: [Int: Data] = [:]
+      for step in stepsNeedingScreenshots {
+        if let img = store.stepScreenshots[step], let data = img.pngData() {
+          screenshotsPNG[step] = data
+        }
+      }
+
+      var annotationsByStep: [Int: ChatExportActionAnnotation] = [:]
+      if annotate {
+        for (step, ann) in store.stepActionAnnotations {
+          switch ann.kind {
+          case .tap(let p):
+            annotationsByStep[step] = ChatExportActionAnnotation(
+              name: ann.name,
+              kind: .tap,
+              x1: p.x,
+              y1: p.y,
+              x2: 0,
+              y2: 0
+            )
+          case .swipe(let s, let e):
+            annotationsByStep[step] = ChatExportActionAnnotation(
+              name: ann.name,
+              kind: .swipe,
+              x1: s.x,
+              y1: s.y,
+              x2: e.x,
+              y2: e.y
+            )
+          case .label:
+            annotationsByStep[step] = ChatExportActionAnnotation(
+              name: ann.name,
+              kind: .label,
+              x1: 0,
+              y1: 0,
+              x2: 0,
+              y2: 0
+            )
+          }
+        }
+      }
+
+      return ChatExportHTMLSnapshot(
+        exportedAt: exportedAt,
+        runnerURL: runnerURL,
+        annotate: annotate,
+        tokenUsage: tokenUsage,
+        configText: cfgText,
+        notes: notes,
+        items: items,
+        screenshotsPNG: screenshotsPNG,
+        annotationsByStep: annotationsByStep
+      )
+    }
 }
 
 private struct NotesView: View {
@@ -597,7 +1228,7 @@ private struct NotesView: View {
 }
 
 private struct TextEditorSheet: View {
-  let title: String
+  let title: LocalizedStringKey
   @Binding var text: String
   @Environment(\.dismiss) private var dismiss
 
@@ -617,7 +1248,7 @@ private struct TextEditorSheet: View {
 }
 
 private struct SystemPromptEditorSheet: View {
-  let title: String
+  let title: LocalizedStringKey
   @Binding var systemPrompt: String
   let defaultTemplate: String
   @Environment(\.dismiss) private var dismiss
@@ -636,11 +1267,16 @@ private struct SystemPromptEditorSheet: View {
           }
         }
         .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Restore Default Template") {
+              draft = defaultTemplate
+            }
+          }
           ToolbarItem(placement: .confirmationAction) {
             Button("Done") {
               // If the user never had a custom prompt and didn't change the default template,
               // keep systemPrompt empty to avoid persisting the built-in template as "custom".
-              if systemPrompt.isEmpty && draft == defaultTemplate {
+              if draft == defaultTemplate {
                 systemPrompt = ""
               } else {
                 systemPrompt = draft
@@ -658,65 +1294,140 @@ private struct SystemPromptEditorSheet: View {
 private struct QRCodeImportSheet: View {
   @Binding var isPresented: Bool
   let onScan: (String) -> String?
+
   @State private var errorText: String?
   @State private var scannerID = UUID()
   @State private var photoPickerItem: PhotosPickerItem?
   @State private var isImportingImageFile = false
 
+  @State private var mode: Mode = .scan
+  @State private var draftText: String = ""
+  @State private var draftErrors: [String] = []
+
+  private enum Mode {
+    case scan
+    case review
+  }
+
   private func handleScannedPayload(_ s: String) {
-    if let err = onScan(s), !err.isEmpty {
+    errorText = nil
+    draftText = s
+    draftErrors = ConsoleStore.validateQRCodeConfigRaw(s)
+    mode = .review
+  }
+
+  private func applyDraft() {
+    if let err = onScan(draftText), !err.isEmpty {
       errorText = err
-    } else {
-      isPresented = false
+      return
     }
+    isPresented = false
   }
 
   var body: some View {
     NavigationStack {
       VStack(spacing: 12) {
-        Text("Scan a QR code containing a JSON config object.")
-          .font(.footnote)
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 16)
-
-        QRCodeScannerView { result in
-          switch result {
-          case .success(let s):
-            handleScannedPayload(s)
-          case .failure(let e):
-            errorText = e.localizedDescription
-          }
-        }
-        .id(scannerID)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 16)
-
-        HStack(spacing: 12) {
-          PhotosPicker(selection: $photoPickerItem, matching: .images) {
-            Label("Import Image", systemImage: "photo")
-          }
-          .buttonStyle(.bordered)
-
-          Button {
-            isImportingImageFile = true
-          } label: {
-            Label("Import File", systemImage: "folder")
-          }
-          .buttonStyle(.bordered)
-        }
-        .padding(.horizontal, 16)
-
-        if let err = errorText, !err.isEmpty {
-          Text(err)
+        if mode == .scan {
+          Text("Scan a QR code containing a JSON config object. You will review and confirm before applying.")
             .font(.footnote)
-            .foregroundStyle(.red)
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
 
-          Button("Scan Again") {
+          QRCodeScannerView { result in
+            switch result {
+            case .success(let s):
+              handleScannedPayload(s)
+            case .failure(let e):
+              errorText = e.localizedDescription
+            }
+          }
+          .id(scannerID)
+          .frame(height: 340)
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+          .padding(.horizontal, 16)
+
+          HStack(spacing: 12) {
+            PhotosPicker(selection: $photoPickerItem, matching: .images) {
+              Label("Import Image", systemImage: "photo")
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+              isImportingImageFile = true
+            } label: {
+              Label("Import File", systemImage: "folder")
+            }
+            .buttonStyle(.bordered)
+          }
+          .padding(.horizontal, 16)
+
+          if let err = errorText, !err.isEmpty {
+            Text(err)
+              .font(.footnote)
+              .foregroundStyle(.red)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.horizontal, 16)
+
+            Button("Scan Again") {
+              errorText = nil
+              scannerID = UUID()
+            }
+          }
+        } else {
+          VStack(alignment: .leading, spacing: 10) {
+            Text("Review & edit")
+              .font(.headline)
+              .frame(maxWidth: .infinity, alignment: .leading)
+
+            TextEditor(text: $draftText)
+              .font(.system(.body, design: .monospaced))
+              .frame(minHeight: 260)
+              .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                  .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+              )
+
+            if !draftErrors.isEmpty {
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Validation errors")
+                  .font(.headline)
+                  .foregroundStyle(.red)
+                ForEach(draftErrors, id: \.self) { e in
+                  Text("• \(e)")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let err = errorText, !err.isEmpty {
+              Text(err)
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(spacing: 12) {
+              Button("Back to Scan") {
+                errorText = nil
+                mode = .scan
+                scannerID = UUID()
+              }
+              .buttonStyle(.bordered)
+
+              Spacer()
+
+              Button("Apply") { applyDraft() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!draftErrors.isEmpty)
+            }
+          }
+          .padding(.horizontal, 16)
+          .onChange(of: draftText) { t in
             errorText = nil
-            scannerID = UUID()
+            draftErrors = ConsoleStore.validateQRCodeConfigRaw(t)
           }
         }
       }
@@ -731,10 +1442,10 @@ private struct QRCodeImportSheet: View {
       guard let item else { return }
       Task {
         do {
-          guard let data = try await item.loadTransferable(type: Data.self) else {
-            errorText = "Cannot load image"
-            return
-          }
+	          guard let data = try await item.loadTransferable(type: Data.self) else {
+	            errorText = NSLocalizedString("Cannot load image", comment: "")
+	            return
+	          }
           await importImageData(data)
         } catch {
           errorText = error.localizedDescription
@@ -765,15 +1476,15 @@ private struct QRCodeImportSheet: View {
   }
 
   private func importImageData(_ data: Data) async {
-    guard let img = UIImage(data: data) else {
-      errorText = "Invalid image"
-      return
-    }
+	    guard let img = UIImage(data: data) else {
+	      errorText = NSLocalizedString("Invalid image", comment: "")
+	      return
+	    }
     let payload = await OnDeviceAgentDecodeQRCodeFromImage(img)
-    guard let payload, !payload.isEmpty else {
-      errorText = "No QR code found in image"
-      return
-    }
+	    guard let payload, !payload.isEmpty else {
+	      errorText = NSLocalizedString("No QR code found in image", comment: "")
+	      return
+	    }
     handleScannedPayload(payload)
   }
 }
@@ -859,10 +1570,10 @@ private struct QRCodeExportSheet: View {
     do {
       let json = try store.exportConfigJSONForQRCode()
       jsonText = json
-      guard let img = OnDeviceAgentMakeQRCodeImage(from: json) else {
-        errorText = "Failed to generate QR image (payload may be too large)."
-        return
-      }
+	      guard let img = OnDeviceAgentMakeQRCodeImage(from: json) else {
+	        errorText = NSLocalizedString("Failed to generate QR image (payload may be too large).", comment: "")
+	        return
+	      }
       qrImage = img
       let ts = Int(Date().timeIntervalSince1970)
       shareURL = try OnDeviceAgentWriteTempPNG(img, filename: "agent_config_qr_\(ts).png")
@@ -880,9 +1591,9 @@ private struct QRCodeScannerView: UIViewControllerRepresentable {
     var errorDescription: String? {
       switch self {
       case .cameraUnavailable:
-        return "Camera unavailable"
+        return NSLocalizedString("Camera unavailable", comment: "")
       case .permissionDenied:
-        return "Camera permission denied"
+        return NSLocalizedString("Camera permission denied", comment: "")
       }
     }
   }
