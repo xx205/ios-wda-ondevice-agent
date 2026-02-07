@@ -7,6 +7,9 @@
  */
 
 #import <XCTest/XCTest.h>
+#import <UIKit/UIKit.h>
+#import <Security/Security.h>
+#import <math.h>
 
 #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
 #import <WebDriverAgentLib/FBConfiguration.h>
@@ -32,6 +35,7 @@ static NSString *const kOnDeviceAgentTaskKey = @"ONDEVICE_AGENT_TASK";
 static NSString *const kOnDeviceAgentBaseURLKey = @"ONDEVICE_AGENT_BASE_URL";
 static NSString *const kOnDeviceAgentModelKey = @"ONDEVICE_AGENT_MODEL";
 static NSString *const kOnDeviceAgentApiKeyKey = @"ONDEVICE_AGENT_API_KEY";
+static NSString *const kOnDeviceAgentAgentTokenKey = @"ONDEVICE_AGENT_AGENT_TOKEN";
 static NSString *const kOnDeviceAgentApiModeKey = @"ONDEVICE_AGENT_API_MODE";
 static NSString *const kOnDeviceAgentApiModeChatCompletions = @"chat_completions";
 static NSString *const kOnDeviceAgentApiModeResponses = @"responses";
@@ -51,6 +55,11 @@ static NSString *const kOnDeviceAgentDebugLogRawAssistantKey = @"ONDEVICE_AGENT_
 static NSString *const kOnDeviceAgentReasoningEffortKey = @"ONDEVICE_AGENT_REASONING_EFFORT";
 static NSString *const kOnDeviceAgentDoubaoSeedEnableSessionCacheKey = @"ONDEVICE_AGENT_DOUBAO_SEED_ENABLE_SESSION_CACHE";
 static NSString *const kOnDeviceAgentUseW3CActionsForSwipeKey = @"ONDEVICE_AGENT_USE_W3C_ACTIONS_FOR_SWIPE";
+static NSString *const kOnDeviceAgentAgentTokenHeader = @"X-OnDevice-Agent-Token";
+static NSString *const kOnDeviceAgentAgentTokenQueryParam = @"token";
+static NSString *const kOnDeviceAgentAgentTokenCookieName = @"ondevice_agent_token";
+static NSString *const kOnDeviceAgentKeychainServiceSuffix = @".OnDeviceAgent";
+static NSString *const kOnDeviceAgentKeychainAccountAPIKey = @"api_key";
 
 static NSString *const kOnDeviceAgentDefaultBaseURL = @"https://ark.cn-beijing.volces.com/api/v3/responses";
 static NSString *const kOnDeviceAgentDefaultModel = @"doubao-seed-1-8-251228";
@@ -64,6 +73,11 @@ static NSInteger const kOnDeviceAgentRecoverableFailureLimit = 2;
 static NSUInteger const kOnDeviceAgentMaxLogLines = 300;
 static NSUInteger const kOnDeviceAgentMaxLogLineChars = 300;
 static NSInteger const kOnDeviceAgentDefaultRefreshIntervalMs = 1500;
+
+@interface OnDeviceAgentManager : NSObject
++ (instancetype)shared;
+- (NSString *)agentToken;
+@end
 
 static void OnDeviceAgentTriggerWirelessDataPromptIfNeeded(void)
 {
@@ -214,6 +228,104 @@ static double OnDeviceAgentParseDouble(id value, double defaultValue)
   return [s doubleValue];
 }
 
+static BOOL OnDeviceAgentNSNumberIsBool(NSNumber *value)
+{
+  if (![value isKindOfClass:NSNumber.class]) {
+    return NO;
+  }
+  return CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID();
+}
+
+static BOOL OnDeviceAgentParseIntStrict(id value, NSInteger *outValue)
+{
+  if ([value isKindOfClass:NSNumber.class]) {
+    NSNumber *n = (NSNumber *)value;
+    if (OnDeviceAgentNSNumberIsBool(n)) {
+      return NO;
+    }
+    const char *objCType = [n objCType];
+    BOOL isFloatType = (objCType != NULL) && (strchr("fd", objCType[0]) != NULL);
+    if (isFloatType) {
+      double d = [n doubleValue];
+      if (!isfinite(d) || floor(d) != d) {
+        return NO;
+      }
+      if (d > (double)NSIntegerMax || d < (double)NSIntegerMin) {
+        return NO;
+      }
+      if (outValue) {
+        *outValue = (NSInteger)d;
+      }
+      return YES;
+    }
+#if !__LP64__
+    long long ll = [n longLongValue];
+    if (ll > (long long)NSIntegerMax || ll < (long long)NSIntegerMin) {
+      return NO;
+    }
+#endif
+    if (outValue) {
+      *outValue = [n integerValue];
+    }
+    return YES;
+  }
+  if (![value isKindOfClass:NSString.class]) {
+    return NO;
+  }
+  NSString *s = [((NSString *)value) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (s.length == 0) {
+    return NO;
+  }
+  NSScanner *scanner = [NSScanner scannerWithString:s];
+  long long parsed = 0;
+  if (![scanner scanLongLong:&parsed] || !scanner.isAtEnd) {
+    return NO;
+  }
+#if !__LP64__
+  if (parsed > (long long)NSIntegerMax || parsed < (long long)NSIntegerMin) {
+    return NO;
+  }
+#endif
+  if (outValue) {
+    *outValue = (NSInteger)parsed;
+  }
+  return YES;
+}
+
+static BOOL OnDeviceAgentParseDoubleStrict(id value, double *outValue)
+{
+  if ([value isKindOfClass:NSNumber.class]) {
+    NSNumber *n = (NSNumber *)value;
+    if (OnDeviceAgentNSNumberIsBool(n)) {
+      return NO;
+    }
+    double d = [n doubleValue];
+    if (!isfinite(d)) {
+      return NO;
+    }
+    if (outValue) {
+      *outValue = d;
+    }
+    return YES;
+  }
+  if (![value isKindOfClass:NSString.class]) {
+    return NO;
+  }
+  NSString *s = [((NSString *)value) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (s.length == 0) {
+    return NO;
+  }
+  NSScanner *scanner = [NSScanner scannerWithString:s];
+  double parsed = 0;
+  if (![scanner scanDouble:&parsed] || !scanner.isAtEnd || !isfinite(parsed)) {
+    return NO;
+  }
+  if (outValue) {
+    *outValue = parsed;
+  }
+  return YES;
+}
+
 static NSInteger OnDeviceAgentMaxChatSteps(NSDictionary *config)
 {
   NSInteger maxSteps = OnDeviceAgentParseInt(config[kOnDeviceAgentMaxStepsKey], kOnDeviceAgentDefaultMaxSteps);
@@ -299,9 +411,13 @@ static NSArray *OnDeviceAgentBuildW3CSwipeActions(XCUIApplication *application,
   CGFloat w = viewport.width;
   CGFloat h = viewport.height;
   if (w < 1.0 || h < 1.0) {
-    // Fallback: assume iPhone portrait points; better than producing invalid actions.
-    w = 390.0;
-    h = 844.0;
+    // Fallback: use the device screen bounds in points.
+    CGSize screen = UIScreen.mainScreen.bounds.size;
+    w = screen.width;
+    h = screen.height;
+  }
+  if (w < 1.0 || h < 1.0) {
+    return nil;
   }
 
   double sx = OnDeviceAgentClampDouble(startX01, 0.0, 1.0) * (double)w;
@@ -317,6 +433,10 @@ static NSArray *OnDeviceAgentBuildW3CSwipeActions(XCUIApplication *application,
     moveMs = 5000;
   }
   NSInteger pauseMs = holdMs;
+  if (pauseMs == 0 && holdMs == 0) {
+    // Default to a short end-hold so the lift-off velocity is closer to 0, reducing inertial scrolling.
+    pauseMs = 120;
+  }
   if (pauseMs < 0) {
     pauseMs = 0;
   }
@@ -332,8 +452,8 @@ static NSArray *OnDeviceAgentBuildW3CSwipeActions(XCUIApplication *application,
       @"actions": @[
         @{@"type": @"pointerMove", @"duration": @0, @"origin": @"viewport", @"x": @(sx), @"y": @(sy)},
         @{@"type": @"pointerDown", @"button": @0},
-        @{@"type": @"pause", @"duration": @(pauseMs)},
         @{@"type": @"pointerMove", @"duration": @(moveMs), @"origin": @"viewport", @"x": @(ex), @"y": @(ey)},
+        @{@"type": @"pause", @"duration": @(pauseMs)},
         @{@"type": @"pointerUp", @"button": @0},
       ],
     },
@@ -383,6 +503,72 @@ static NSString *OnDeviceAgentJSONStringFromObject(id obj)
   }
   NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
   return s ?: ([obj description] ?: @"");
+}
+
+static BOOL OnDeviceAgentRawKeyShouldRedact(NSString *key)
+{
+  NSString *k = OnDeviceAgentTrim(key ?: @"").lowercaseString;
+  if (k.length == 0) {
+    return NO;
+  }
+  return [k isEqualToString:@"authorization"] ||
+         [k isEqualToString:@"api_key"] ||
+         [k isEqualToString:@"apikey"] ||
+         [k hasSuffix:@"_api_key"];
+}
+
+static NSString *OnDeviceAgentRedactStringForRaw(NSString *value, NSString *keyHint)
+{
+  NSString *v = value ?: @"";
+  if (OnDeviceAgentRawKeyShouldRedact(keyHint)) {
+    return @"<redacted>";
+  }
+  NSString *lower = v.lowercaseString;
+  if ([lower hasPrefix:@"data:image/"] && [lower containsString:@"base64,"]) {
+    return @"data:image/png;base64,<omitted>";
+  }
+  if ([lower hasPrefix:@"bearer "] || [lower hasPrefix:@"authorization: bearer "]) {
+    return @"<redacted>";
+  }
+  return v;
+}
+
+static id OnDeviceAgentRedactObjectForRaw(id obj, NSString *keyHint)
+{
+  if ([obj isKindOfClass:NSString.class]) {
+    return OnDeviceAgentRedactStringForRaw((NSString *)obj, keyHint);
+  }
+
+  if ([obj isKindOfClass:NSDictionary.class]) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSDictionary *src = (NSDictionary *)obj;
+    for (id kObj in src) {
+      NSString *k = [kObj isKindOfClass:NSString.class] ? (NSString *)kObj : @"";
+      id v = src[kObj];
+      if (OnDeviceAgentRawKeyShouldRedact(k)) {
+        out[kObj ?: @""] = @"<redacted>";
+      } else {
+        out[kObj ?: @""] = OnDeviceAgentRedactObjectForRaw(v, k);
+      }
+    }
+    return out.copy;
+  }
+
+  if ([obj isKindOfClass:NSArray.class]) {
+    NSMutableArray *arr = [NSMutableArray array];
+    for (id item in (NSArray *)obj) {
+      [arr addObject:OnDeviceAgentRedactObjectForRaw(item, keyHint)];
+    }
+    return arr.copy;
+  }
+
+  return obj ?: [NSNull null];
+}
+
+static NSString *OnDeviceAgentJSONStringFromObjectForRaw(id obj)
+{
+  id redacted = OnDeviceAgentRedactObjectForRaw(obj, @"");
+  return OnDeviceAgentJSONStringFromObject(redacted);
 }
 
 static NSString *OnDeviceAgentTruncate(NSString *s, NSUInteger maxChars)
@@ -812,12 +998,12 @@ static NSString *OnDeviceAgentDefaultSystemPromptTemplate(void)
   static NSString *const kOnDeviceAgentSystemPromptPreamble =
     @"今天的日期是：{{DATE_ZH}}\n"
     @"\n"
-    @"你是一个运行在 iPhone 上的 UI 自动化智能体（WebDriverAgentRunner / XCTest）。\n"
+    @"你是一个运行在 iPhone 上的 UI 自动化智能体。\n"
     @"你会在每一步收到：任务描述、当前屏幕截图，以及 Screen Info（JSON）。你需要决定下一步 UI 操作来完成任务。\n"
     @"\n";
 
   static NSString *const kOnDeviceAgentSystemPromptOutputFormat =
-    @"【输出格式（必须严格遵守）】\n"
+    @"【输出格式】\n"
     @"- 只输出 1 个 JSON 对象，且整个回复必须是这个 JSON（不要有任何额外字符/解释/Markdown/代码块）。\n"
     @"- JSON 必须包含字符串字段 \"think\"，以及对象字段 \"action\"。\n"
     @"- \"action\" 必须是一个对象：{\"name\": \"Tap\", \"params\": {...}}。\n"
@@ -826,14 +1012,14 @@ static NSString *OnDeviceAgentDefaultSystemPromptTemplate(void)
     @"\n";
 
   static NSString *const kOnDeviceAgentSystemPromptPlan =
-    @"【计划（plan）】\n"
+    @"【计划】\n"
     @"你必须维护一个 checklist（字段 \"plan\"）来推进长任务。\n"
     @"- 第 0 步：输出 \"plan\" 数组，每项 {\"text\":\"...\",\"done\":true/false}。\n"
     @"- 后续步骤：继续输出 \"plan\" 并更新 done；必要时可增删，但保持精简（<=12 项）。\n"
     @"\n";
 
   static NSString *const kOnDeviceAgentSystemPromptNote =
-    @"【工作记忆（Note）】\n"
+    @"【工作记忆】\n"
     @"- Note 会在后续每一步提供给你；在开始一个新任务的时候会自动清空。\n"
     @"- 用 Note 动作覆盖写入（不是追加；你可以自由重写/整理/压缩）。\n"
     @"- 适合记录：要填写到表格的文字、已收集列表、账号/链接、统计结果等。\n"
@@ -846,11 +1032,11 @@ static NSString *OnDeviceAgentDefaultSystemPromptTemplate(void)
     @"- 坐标为相对坐标：左上角 (0,0)，右下角 (1000,1000)。\n"
     @"- Tap/Double Tap/Long Press 使用 action.params.element:[x,y]。\n"
     @"- Swipe 使用 action.params.start:[x1,y1] 与 action.params.end:[x2,y2]。\n"
-    @"- 如果 Swipe 看起来没生效，可以尝试将结束点相对延伸 10% 左右，以达到被操作 App 的 Swipe 操作判定条件。\n"
+    @"- 如果 Swipe 看起来没生效，可以尝试将结束点延伸到 120% 距离处，以达到被操作 App 的 Swipe 操作判定条件。\n"
     @"\n";
 
   static NSString *const kOnDeviceAgentSystemPromptActions =
-    @"【可用动作（仅以下这些）】\n"
+    @"【可用动作】\n"
     @"- 以下示例仅展示 action 字段，实际输出仍必须包含 think/plan。\n"
     @"- Launch：启动/切换 App（优先使用）\n"
     @"  {\"action\":{\"name\":\"Launch\",\"params\":{\"app\":\"某 app 名称\"}}}\n"
@@ -864,7 +1050,7 @@ static NSString *OnDeviceAgentDefaultSystemPromptTemplate(void)
     @"- Type：向当前聚焦输入框输入文本（会自动清空原内容）\n"
     @"  {\"action\":{\"name\":\"Type\",\"params\":{\"text\":\"一段文本\"}}}\n"
     @"- Swipe：滑动\n"
-    @"  {\"action\":{\"name\":\"Swipe\",\"params\":{\"start\":[x1,y1],\"end\":[x2,y2],\"seconds\":1.0}}}\n"
+    @"  {\"action\":{\"name\":\"Swipe\",\"params\":{\"start\":[x1,y1],\"end\":[x2,y2],\"seconds\":0.5}}}\n"
     @"- Back：返回/关闭（iOS 手势）\n"
     @"  {\"action\":{\"name\":\"Back\",\"params\":{}}}\n"
     @"- Home：回到桌面\n"
@@ -1214,6 +1400,76 @@ static BOOL OnDeviceAgentWaitForActiveBundleId(NSString *bundleId, NSTimeInterva
   return NO;
 }
 
+static NSString *OnDeviceAgentKeychainService(void)
+{
+  NSString *bundleId = NSBundle.mainBundle.bundleIdentifier ?: @"com.facebook.WebDriverAgentRunner";
+  return [bundleId stringByAppendingString:kOnDeviceAgentKeychainServiceSuffix];
+}
+
+static NSString *OnDeviceAgentKeychainGet(NSString *service, NSString *account)
+{
+  if (service.length == 0 || account.length == 0) {
+    return @"";
+  }
+  NSDictionary *query = @{
+    (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService: service,
+    (__bridge id)kSecAttrAccount: account,
+    (__bridge id)kSecReturnData: @YES,
+    (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+  };
+  CFTypeRef item = NULL;
+  OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &item);
+  if (status != errSecSuccess || item == NULL) {
+    return @"";
+  }
+  NSData *data = CFBridgingRelease(item);
+  if (![data isKindOfClass:NSData.class] || data.length == 0) {
+    return @"";
+  }
+  NSString *value = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  return value ?: @"";
+}
+
+static BOOL OnDeviceAgentKeychainSet(NSString *service, NSString *account, NSString *value)
+{
+  if (service.length == 0 || account.length == 0) {
+    return NO;
+  }
+  NSString *normalized = OnDeviceAgentStringOrEmpty(value);
+  NSData *valueData = [normalized dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  NSDictionary *query = @{
+    (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService: service,
+    (__bridge id)kSecAttrAccount: account,
+  };
+  NSDictionary *attrs = @{
+    (__bridge id)kSecValueData: valueData,
+    (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+  };
+  OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attrs);
+  if (status == errSecItemNotFound) {
+    NSMutableDictionary *insert = [query mutableCopy];
+    [insert addEntriesFromDictionary:attrs];
+    status = SecItemAdd((__bridge CFDictionaryRef)insert, NULL);
+  }
+  return status == errSecSuccess;
+}
+
+static BOOL OnDeviceAgentKeychainDelete(NSString *service, NSString *account)
+{
+  if (service.length == 0 || account.length == 0) {
+    return NO;
+  }
+  NSDictionary *query = @{
+    (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService: service,
+    (__bridge id)kSecAttrAccount: account,
+  };
+  OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+  return status == errSecSuccess || status == errSecItemNotFound;
+}
+
 @interface OnDeviceAgentTextPayload : NSObject <FBResponsePayload>
 @property (nonatomic, copy) NSString *text;
 @property (nonatomic, copy) NSString *contentType;
@@ -1241,6 +1497,247 @@ static BOOL OnDeviceAgentWaitForActiveBundleId(NSString *bundleId, NSTimeInterva
 }
 
 @end
+
+@interface OnDeviceAgentJSONPayload : NSObject <FBResponsePayload>
+@property (nonatomic, copy) NSDictionary *object;
+@property (nonatomic, assign) NSInteger statusCode;
+@end
+
+@implementation OnDeviceAgentJSONPayload
+
+- (instancetype)initWithObject:(NSDictionary *)object statusCode:(NSInteger)statusCode
+{
+  self = [super init];
+  if (self) {
+    _object = [object isKindOfClass:NSDictionary.class] ? [object copy] : @{};
+    _statusCode = statusCode;
+  }
+  return self;
+}
+
+- (void)dispatchWithResponse:(RouteResponse *)response
+{
+  [response setHeader:@"Content-Type" value:@"application/json;charset=UTF-8"];
+  [response setStatusCode:self.statusCode];
+  NSError *error = nil;
+  NSData *data = [NSJSONSerialization dataWithJSONObject:self.object options:0 error:&error];
+  if (data.length == 0 || error != nil) {
+    [response respondWithString:@"{}" encoding:NSUTF8StringEncoding];
+    return;
+  }
+  NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  [response respondWithString:text ?: @"{}" encoding:NSUTF8StringEncoding];
+}
+
+@end
+
+static NSString *OnDeviceAgentHeaderValueCaseInsensitive(FBRouteRequest *request, NSString *fieldName)
+{
+  NSDictionary *headers = [request.headers isKindOfClass:NSDictionary.class] ? request.headers : @{};
+  if (headers.count == 0) {
+    return @"";
+  }
+  NSString *needle = OnDeviceAgentTrim(fieldName).lowercaseString;
+  if (needle.length == 0) {
+    return @"";
+  }
+  for (id key in headers) {
+    if (![key isKindOfClass:NSString.class]) {
+      continue;
+    }
+    NSString *name = [((NSString *)key) lowercaseString];
+    if (![name isEqualToString:needle]) {
+      continue;
+    }
+    id value = headers[key];
+    if ([value isKindOfClass:NSString.class]) {
+      return OnDeviceAgentTrim((NSString *)value);
+    }
+    if ([value isKindOfClass:NSArray.class]) {
+      id first = [((NSArray *)value) firstObject];
+      if ([first isKindOfClass:NSString.class]) {
+        return OnDeviceAgentTrim((NSString *)first);
+      }
+    }
+  }
+  return @"";
+}
+
+static BOOL OnDeviceAgentIsLoopbackHost(NSString *host)
+{
+  NSString *h = OnDeviceAgentTrim(host).lowercaseString;
+  NSRange zoneSep = [h rangeOfString:@"%"];
+  if (zoneSep.location != NSNotFound) {
+    h = [h substringToIndex:zoneSep.location];
+  }
+  if ([h hasPrefix:@"::ffff:"]) {
+    h = [h substringFromIndex:@"::ffff:".length];
+  }
+  if (h.length == 0) {
+    return NO;
+  }
+  if ([h isEqualToString:@"localhost"] || [h isEqualToString:@"127.0.0.1"] || [h isEqualToString:@"::1"] || [h isEqualToString:@"0:0:0:0:0:0:0:1"]) {
+    return YES;
+  }
+  return NO;
+}
+
+static BOOL OnDeviceAgentIsLocalhostRequest(FBRouteRequest *request)
+{
+  NSString *clientHost = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.clientHost));
+  if (clientHost.length == 0) {
+    return NO;
+  }
+  return OnDeviceAgentIsLoopbackHost(clientHost);
+}
+
+static NSString *OnDeviceAgentQueryValueCaseInsensitive(NSURL *url, NSString *name)
+{
+  NSString *needle = OnDeviceAgentTrim(name).lowercaseString;
+  if (needle.length == 0 || url == nil) {
+    return @"";
+  }
+  NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+  for (NSURLQueryItem *item in components.queryItems ?: @[]) {
+    NSString *itemName = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(item.name)).lowercaseString;
+    if (![itemName isEqualToString:needle]) {
+      continue;
+    }
+    NSString *v = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(item.value));
+    if (v.length > 0) {
+      return v;
+    }
+  }
+  return @"";
+}
+
+static NSString *OnDeviceAgentCookieValueCaseInsensitive(FBRouteRequest *request, NSString *cookieName)
+{
+  NSString *needle = OnDeviceAgentTrim(cookieName).lowercaseString;
+  if (needle.length == 0) {
+    return @"";
+  }
+  NSString *cookieHeader = OnDeviceAgentHeaderValueCaseInsensitive(request, @"Cookie");
+  if (cookieHeader.length == 0) {
+    return @"";
+  }
+  NSArray<NSString *> *items = [cookieHeader componentsSeparatedByString:@";"];
+  for (NSString *rawItem in items) {
+    NSString *item = OnDeviceAgentTrim(rawItem);
+    if (item.length == 0) {
+      continue;
+    }
+    NSRange eq = [item rangeOfString:@"="];
+    if (eq.location == NSNotFound) {
+      continue;
+    }
+    NSString *name = OnDeviceAgentTrim([item substringToIndex:eq.location]).lowercaseString;
+    if (![name isEqualToString:needle]) {
+      continue;
+    }
+    NSString *rawValue = OnDeviceAgentTrim([item substringFromIndex:eq.location + 1]);
+    if (rawValue.length == 0) {
+      continue;
+    }
+    NSString *decoded = [rawValue stringByRemovingPercentEncoding];
+    NSString *token = OnDeviceAgentTrim(decoded ?: rawValue);
+    if (token.length > 0) {
+      return token;
+    }
+  }
+  return @"";
+}
+
+typedef NS_OPTIONS(NSUInteger, OnDeviceAgentTokenSources) {
+  OnDeviceAgentTokenSourceHeader = 1 << 0,
+  OnDeviceAgentTokenSourceQuery = 1 << 1,
+  OnDeviceAgentTokenSourceCookie = 1 << 2,
+};
+
+static NSString *OnDeviceAgentAgentTokenFromRequest(FBRouteRequest *request, OnDeviceAgentTokenSources sources)
+{
+  if ((sources & OnDeviceAgentTokenSourceHeader) != 0) {
+    NSString *headerToken = OnDeviceAgentHeaderValueCaseInsensitive(request, kOnDeviceAgentAgentTokenHeader);
+    if (headerToken.length > 0) {
+      return headerToken;
+    }
+  }
+  if ((sources & OnDeviceAgentTokenSourceQuery) != 0) {
+    NSString *queryToken = OnDeviceAgentQueryValueCaseInsensitive(request.URL, kOnDeviceAgentAgentTokenQueryParam);
+    if (queryToken.length > 0) {
+      return queryToken;
+    }
+  }
+  if ((sources & OnDeviceAgentTokenSourceCookie) != 0) {
+    NSString *cookieToken = OnDeviceAgentCookieValueCaseInsensitive(request, kOnDeviceAgentAgentTokenCookieName);
+    if (cookieToken.length > 0) {
+      return cookieToken;
+    }
+  }
+  return @"";
+}
+
+static id<FBResponsePayload> OnDeviceAgentUnauthorizedPayload(NSString *message)
+{
+  NSString *err = OnDeviceAgentTrim(message);
+  if (err.length == 0) {
+    err = @"Unauthorized";
+  }
+  NSDictionary *obj = @{
+    @"ok": @NO,
+    @"error": err,
+  };
+  return [[OnDeviceAgentJSONPayload alloc] initWithObject:obj statusCode:kHTTPStatusCodeUnauthorized];
+}
+
+static id<FBResponsePayload> OnDeviceAgentBadRequestPayload(NSString *message)
+{
+  NSString *err = OnDeviceAgentTrim(message);
+  if (err.length == 0) {
+    err = @"Bad request";
+  }
+  NSDictionary *obj = @{
+    @"ok": @NO,
+    @"error": err,
+  };
+  return [[OnDeviceAgentJSONPayload alloc] initWithObject:obj statusCode:kHTTPStatusCodeBadRequest];
+}
+
+static BOOL OnDeviceAgentAuthorizeAgentRouteWithSources(FBRouteRequest *request, OnDeviceAgentTokenSources tokenSources, NSString **outMessage)
+{
+  if (OnDeviceAgentIsLocalhostRequest(request)) {
+    return YES;
+  }
+  NSString *expected = [[OnDeviceAgentManager shared] agentToken];
+  if (expected.length == 0) {
+    if (outMessage) {
+      *outMessage = @"LAN access denied. Set Agent Token in Console first.";
+    }
+    return NO;
+  }
+  NSString *provided = OnDeviceAgentAgentTokenFromRequest(request, tokenSources);
+  if (provided.length == 0 || ![provided isEqualToString:expected]) {
+    if (outMessage) {
+      *outMessage = @"Unauthorized: invalid or missing Agent Token.";
+    }
+    return NO;
+  }
+  return YES;
+}
+
+static BOOL OnDeviceAgentAuthorizeAgentRoute(FBRouteRequest *request, NSString **outMessage)
+{
+  return OnDeviceAgentAuthorizeAgentRouteWithSources(request, OnDeviceAgentTokenSourceHeader, outMessage);
+}
+
+static BOOL OnDeviceAgentAuthorizeAgentPageRoute(FBRouteRequest *request, NSString **outMessage)
+{
+  return OnDeviceAgentAuthorizeAgentRouteWithSources(
+    request,
+    OnDeviceAgentTokenSourceHeader | OnDeviceAgentTokenSourceQuery | OnDeviceAgentTokenSourceCookie,
+    outMessage
+  );
+}
 
 typedef void (^OnDeviceAgentLogBlock)(NSString *line);
 typedef void (^OnDeviceAgentChatBlock)(NSDictionary *item);
@@ -1532,6 +2029,14 @@ static long long OnDeviceAgentLL(id v)
   return [v1 URLByAppendingPathComponent:@"responses"];
 }
 
+- (NSString *)modelServiceHost
+{
+  NSString *baseURL = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentBaseURLKey]));
+  NSURL *base = [NSURL URLWithString:baseURL];
+  NSString *host = OnDeviceAgentTrim(base.host ?: @"");
+  return host.lowercaseString;
+}
+
 - (NSData *)takeScreenshotPNG
 {
   __block NSData *png = nil;
@@ -1582,38 +2087,6 @@ static long long OnDeviceAgentLL(id v)
     @"bundle_id": bundleId ?: @"",
   };
   return OnDeviceAgentJSONStringFromObject(info);
-}
-
-- (void)stripImagesFromLastUserMessage
-{
-  if (self.context.count == 0) {
-    return;
-  }
-  NSDictionary *last = self.context.lastObject;
-  if (![last isKindOfClass:NSDictionary.class]) {
-    return;
-  }
-  if (![[last objectForKey:@"role"] isEqual:@"user"]) {
-    return;
-  }
-  id content = last[@"content"];
-  if (![content isKindOfClass:NSArray.class]) {
-    return;
-  }
-
-  NSMutableArray *textOnly = [NSMutableArray array];
-  for (id part in (NSArray *)content) {
-    if (![part isKindOfClass:NSDictionary.class]) {
-      continue;
-    }
-    if ([((NSDictionary *)part)[@"type"] isEqual:@"text"]) {
-      [textOnly addObject:part];
-    }
-  }
-
-  NSMutableDictionary *mut = [last mutableCopy];
-  mut[@"content"] = [textOnly copy];
-  self.context[self.context.count - 1] = [mut copy];
 }
 
 - (NSDictionary *)parseActionFromModelText:(NSString *)text error:(NSError **)error
@@ -2267,10 +2740,14 @@ static long long OnDeviceAgentLL(id v)
         if (useW3CSwipe) {
           NSError *w3cErr = nil;
           NSArray *w3c = OnDeviceAgentBuildW3CSwipeActions(active, sx, sy, ex, ey, durationMs, holdMs);
-          if ([active fb_performW3CActions:w3c elementCache:nil error:&w3cErr]) {
-            return;
+          if (w3c) {
+            if ([active fb_performW3CActions:w3c elementCache:nil error:&w3cErr]) {
+              return;
+            }
+            [self emit:[NSString stringWithFormat:@"[AGENT] swipe(w3c) failed: %@", w3cErr.localizedDescription ?: @"unknown"]];
+          } else {
+            [self emit:@"[AGENT] swipe(w3c) skipped: invalid viewport size"];
           }
-          [self emit:[NSString stringWithFormat:@"[AGENT] swipe(w3c) failed: %@", w3cErr.localizedDescription ?: @"unknown"]];
         }
 
         // Fallback: XCUITest drag. Note this is "press then drag" semantics, not a true flick.
@@ -2339,7 +2816,7 @@ static long long OnDeviceAgentLL(id v)
     if (!useResponses) {
       [self.context addObject:@{@"role": @"system", @"content": renderedSystemPrompt}];
     }
-  BOOL captureRawConversation = OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], YES);
+  BOOL captureRawConversation = OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], NO);
 
   for (NSInteger step = 0; step < maxSteps; step++) {
     if (self.stopRequested) {
@@ -2439,7 +2916,7 @@ static long long OnDeviceAgentLL(id v)
               NSDictionary *reqObj = useResponses
                 ? [self responsesRequestBodyForInput:responsesInput previousResponseId:self.previousResponseId forRaw:YES]
                 : [self chatCompletionsRequestBodyForMessages:self.context step:step forRaw:YES];
-              chatItem[@"raw"] = OnDeviceAgentJSONStringFromObject(@{@"request": reqObj ?: @{}});
+              chatItem[@"raw"] = OnDeviceAgentJSONStringFromObjectForRaw(@{@"request": reqObj ?: @{}});
               }
           [self emitChat:chatItem.copy];
         }
@@ -2505,7 +2982,7 @@ static long long OnDeviceAgentLL(id v)
         }
         if (captureRawConversation) {
           NSDictionary *sanitized = useResponses ? OnDeviceAgentSanitizeResponsesObjectForChat(resp) : OnDeviceAgentSanitizeChatCompletionsResponseForChat(resp);
-          chatItem[@"raw"] = OnDeviceAgentJSONStringFromObject(@{@"response": sanitized ?: @{}});
+          chatItem[@"raw"] = OnDeviceAgentJSONStringFromObjectForRaw(@{@"response": sanitized ?: @{}});
         }
         [self emitChat:chatItem.copy];
       }
@@ -2573,7 +3050,7 @@ static long long OnDeviceAgentLL(id v)
               NSDictionary *reqObj = useResponses
                 ? [self responsesRequestBodyForInput:responsesFixInput previousResponseId:self.previousResponseId forRaw:YES]
                 : [self chatCompletionsRequestBodyForMessages:[self.context arrayByAddingObject:repairUser] step:step forRaw:YES];
-              chatItem[@"raw"] = OnDeviceAgentJSONStringFromObject(@{@"request": reqObj ?: @{}});
+              chatItem[@"raw"] = OnDeviceAgentJSONStringFromObjectForRaw(@{@"request": reqObj ?: @{}});
               }
           [self emitChat:chatItem.copy];
         }
@@ -2640,7 +3117,7 @@ static long long OnDeviceAgentLL(id v)
           }
           if (captureRawConversation) {
             NSDictionary *sanitized = useResponses ? OnDeviceAgentSanitizeResponsesObjectForChat(fixResp) : OnDeviceAgentSanitizeChatCompletionsResponseForChat(fixResp);
-            chatItem[@"raw"] = OnDeviceAgentJSONStringFromObject(@{@"response": sanitized ?: @{}});
+            chatItem[@"raw"] = OnDeviceAgentJSONStringFromObjectForRaw(@{@"response": sanitized ?: @{}});
           }
           [self emitChat:chatItem.copy];
         }
@@ -2760,6 +3237,15 @@ static long long OnDeviceAgentLL(id v)
     completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
     return;
   }
+
+  // Scope guard: only allow insecure TLS for the configured model-service host.
+  NSString *modelHost = [self modelServiceHost];
+  NSString *challengeHost = OnDeviceAgentTrim(challenge.protectionSpace.host ?: @"").lowercaseString;
+  if (modelHost.length > 0 && challengeHost.length > 0 && ![modelHost isEqualToString:challengeHost]) {
+    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    return;
+  }
+
   SecTrustRef trust = challenge.protectionSpace.serverTrust;
   if (trust != NULL) {
     NSURLCredential *cred = [NSURLCredential credentialForTrust:trust];
@@ -2771,7 +3257,7 @@ static long long OnDeviceAgentLL(id v)
 
 @end
 
-@interface OnDeviceAgentManager : NSObject
+@interface OnDeviceAgentManager ()
 @property (nonatomic, strong) dispatch_queue_t stateQueue;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *chatItems;
@@ -2912,7 +3398,7 @@ static long long OnDeviceAgentLL(id v)
     kOnDeviceAgentBaseURLKey,
     kOnDeviceAgentModelKey,
     kOnDeviceAgentApiModeKey,
-    kOnDeviceAgentApiKeyKey,
+    kOnDeviceAgentAgentTokenKey,
     kOnDeviceAgentRememberApiKeyKey,
     kOnDeviceAgentUseCustomSystemPromptKey,
     kOnDeviceAgentCustomSystemPromptKey,
@@ -2930,6 +3416,9 @@ static long long OnDeviceAgentLL(id v)
   for (NSString *k in keys) {
     [d removeObjectForKey:k];
   }
+  // Remove legacy plain-text key persisted in older versions.
+  [d removeObjectForKey:kOnDeviceAgentApiKeyKey];
+  (void)OnDeviceAgentKeychainDelete(OnDeviceAgentKeychainService(), kOnDeviceAgentKeychainAccountAPIKey);
 }
 
 - (void)factoryReset
@@ -3007,10 +3496,22 @@ static long long OnDeviceAgentLL(id v)
     model = kOnDeviceAgentDefaultModel;
   }
   NSString *apiKey = @"";
+  NSString *agentToken = OnDeviceAgentTrim([d stringForKey:kOnDeviceAgentAgentTokenKey] ?: @"");
   BOOL remember = [d boolForKey:kOnDeviceAgentRememberApiKeyKey];
   if (remember) {
-    apiKey = [d stringForKey:kOnDeviceAgentApiKeyKey] ?: @"";
+    apiKey = OnDeviceAgentKeychainGet(OnDeviceAgentKeychainService(), kOnDeviceAgentKeychainAccountAPIKey);
+    if (apiKey.length == 0) {
+      // Legacy migration: move plain-text key from defaults to Keychain once.
+      NSString *legacy = [d stringForKey:kOnDeviceAgentApiKeyKey] ?: @"";
+      if (legacy.length > 0) {
+        if (!OnDeviceAgentKeychainSet(OnDeviceAgentKeychainService(), kOnDeviceAgentKeychainAccountAPIKey, legacy)) {
+          [FBLogger log:@"[ONDEVICE] Failed to migrate legacy API key to Keychain"];
+        }
+        apiKey = legacy;
+      }
+    }
   }
+  [d removeObjectForKey:kOnDeviceAgentApiKeyKey];
 
   BOOL useCustomSystemPrompt = [d boolForKey:kOnDeviceAgentUseCustomSystemPromptKey];
   NSString *customSystemPrompt = [d stringForKey:kOnDeviceAgentCustomSystemPromptKey] ?: @"";
@@ -3032,7 +3533,7 @@ static long long OnDeviceAgentLL(id v)
   double stepDelay = (stepDelayObj == nil) ? kOnDeviceAgentDefaultStepDelaySeconds : [d doubleForKey:kOnDeviceAgentStepDelaySecondsKey];
   BOOL insecure = [d boolForKey:kOnDeviceAgentInsecureSkipTLSVerifyKey];
   id dbgObj = [d objectForKey:kOnDeviceAgentDebugLogRawAssistantKey];
-  BOOL debugRaw = (dbgObj == nil) ? YES : [d boolForKey:kOnDeviceAgentDebugLogRawAssistantKey];
+  BOOL debugRaw = (dbgObj == nil) ? NO : [d boolForKey:kOnDeviceAgentDebugLogRawAssistantKey];
   id halfResObj = [d objectForKey:kOnDeviceAgentHalfResScreenshotKey];
   BOOL halfRes = (halfResObj == nil) ? YES : [d boolForKey:kOnDeviceAgentHalfResScreenshotKey];
   id w3cSwipeObj = [d objectForKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
@@ -3043,6 +3544,7 @@ static long long OnDeviceAgentLL(id v)
   self.config[kOnDeviceAgentModelKey] = model;
   self.config[kOnDeviceAgentApiModeKey] = apiMode.length > 0 ? apiMode : kOnDeviceAgentApiModeResponses;
   self.config[kOnDeviceAgentApiKeyKey] = apiKey;
+  self.config[kOnDeviceAgentAgentTokenKey] = agentToken;
   self.config[kOnDeviceAgentRememberApiKeyKey] = @(remember);
   self.config[kOnDeviceAgentUseCustomSystemPromptKey] = @(useCustomSystemPrompt);
   self.config[kOnDeviceAgentCustomSystemPromptKey] = customSystemPrompt;
@@ -3070,13 +3572,23 @@ static long long OnDeviceAgentLL(id v)
   }
   [d setObject:apiMode forKey:kOnDeviceAgentApiModeKey];
 
+  [d setObject:OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentAgentTokenKey])) forKey:kOnDeviceAgentAgentTokenKey];
+
   BOOL remember = OnDeviceAgentParseBool(self.config[kOnDeviceAgentRememberApiKeyKey], NO);
   [d setBool:remember forKey:kOnDeviceAgentRememberApiKeyKey];
   if (remember) {
-    [d setObject:OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiKeyKey])) forKey:kOnDeviceAgentApiKeyKey];
+    NSString *key = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiKeyKey]));
+    if (key.length > 0) {
+      if (!OnDeviceAgentKeychainSet(OnDeviceAgentKeychainService(), kOnDeviceAgentKeychainAccountAPIKey, key)) {
+        [FBLogger log:@"[ONDEVICE] Failed to persist API key to Keychain"];
+      }
+    } else {
+      (void)OnDeviceAgentKeychainDelete(OnDeviceAgentKeychainService(), kOnDeviceAgentKeychainAccountAPIKey);
+    }
   } else {
-    [d removeObjectForKey:kOnDeviceAgentApiKeyKey];
+    (void)OnDeviceAgentKeychainDelete(OnDeviceAgentKeychainService(), kOnDeviceAgentKeychainAccountAPIKey);
   }
+  [d removeObjectForKey:kOnDeviceAgentApiKeyKey];
 
   [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseCustomSystemPromptKey], NO) forKey:kOnDeviceAgentUseCustomSystemPromptKey];
   NSString *customSystemPrompt = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentCustomSystemPromptKey]);
@@ -3103,82 +3615,125 @@ static long long OnDeviceAgentLL(id v)
   [d setDouble:OnDeviceAgentParseDouble(self.config[kOnDeviceAgentStepDelaySecondsKey], kOnDeviceAgentDefaultStepDelaySeconds)
         forKey:kOnDeviceAgentStepDelaySecondsKey];
   [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey], NO) forKey:kOnDeviceAgentInsecureSkipTLSVerifyKey];
-  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], YES) forKey:kOnDeviceAgentDebugLogRawAssistantKey];
+  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], NO) forKey:kOnDeviceAgentDebugLogRawAssistantKey];
   [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], NO) forKey:kOnDeviceAgentHalfResScreenshotKey];
   [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseW3CActionsForSwipeKey], YES) forKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
   [d synchronize];
 }
 
-- (void)updateConfigWithArguments:(NSDictionary *)args
+- (BOOL)updateConfigWithArguments:(NSDictionary *)args errorMessage:(NSString **)message
 {
+  NSMutableDictionary *next = [self.config mutableCopy] ?: [NSMutableDictionary dictionary];
+
   NSString *apiMode = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(args[@"api_mode"]));
   NSString *task = OnDeviceAgentStringOrEmpty(args[@"task"]);
   NSString *baseURL = OnDeviceAgentStringOrEmpty(args[@"base_url"]);
   NSString *model = OnDeviceAgentStringOrEmpty(args[@"model"]);
   NSString *apiKey = OnDeviceAgentNormalizeApiKey(OnDeviceAgentStringOrEmpty(args[@"api_key"]));
+  NSString *agentToken = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(args[@"agent_token"]));
 
   if ([args objectForKey:@"api_mode"] != nil && apiMode.length > 0) {
     if ([apiMode isEqualToString:kOnDeviceAgentApiModeChatCompletions] || [apiMode isEqualToString:kOnDeviceAgentApiModeResponses]) {
-      self.config[kOnDeviceAgentApiModeKey] = apiMode;
+      next[kOnDeviceAgentApiModeKey] = apiMode;
+    } else {
+      if (message) {
+        *message = [NSString stringWithFormat:@"Invalid api_mode: %@", apiMode];
+      }
+      return NO;
     }
   }
   if (task.length > 0) {
-    self.config[kOnDeviceAgentTaskKey] = task;
+    next[kOnDeviceAgentTaskKey] = task;
   }
   if (baseURL.length > 0) {
-    self.config[kOnDeviceAgentBaseURLKey] = baseURL;
+    next[kOnDeviceAgentBaseURLKey] = baseURL;
   }
   if (model.length > 0) {
-    self.config[kOnDeviceAgentModelKey] = model;
+    next[kOnDeviceAgentModelKey] = model;
   }
   if (apiKey.length > 0 || [args objectForKey:@"api_key"] != nil) {
-    self.config[kOnDeviceAgentApiKeyKey] = apiKey;
+    next[kOnDeviceAgentApiKeyKey] = apiKey;
+  }
+  if ([args objectForKey:@"agent_token"] != nil) {
+    next[kOnDeviceAgentAgentTokenKey] = agentToken;
   }
 
   if ([args objectForKey:@"use_custom_system_prompt"] != nil) {
-    self.config[kOnDeviceAgentUseCustomSystemPromptKey] = @(OnDeviceAgentParseBool(args[@"use_custom_system_prompt"], NO));
+    next[kOnDeviceAgentUseCustomSystemPromptKey] = @(OnDeviceAgentParseBool(args[@"use_custom_system_prompt"], NO));
   }
   if ([args objectForKey:@"system_prompt"] != nil) {
-    self.config[kOnDeviceAgentCustomSystemPromptKey] = OnDeviceAgentStringOrEmpty(args[@"system_prompt"]);
+    next[kOnDeviceAgentCustomSystemPromptKey] = OnDeviceAgentStringOrEmpty(args[@"system_prompt"]);
   }
   if ([args objectForKey:@"reasoning_effort"] != nil) {
-    self.config[kOnDeviceAgentReasoningEffortKey] = OnDeviceAgentNormalizeReasoningEffort(OnDeviceAgentStringOrEmpty(args[@"reasoning_effort"]));
+    next[kOnDeviceAgentReasoningEffortKey] = OnDeviceAgentNormalizeReasoningEffort(OnDeviceAgentStringOrEmpty(args[@"reasoning_effort"]));
   }
   if ([args objectForKey:@"doubao_seed_enable_session_cache"] != nil) {
-    self.config[kOnDeviceAgentDoubaoSeedEnableSessionCacheKey] = @(OnDeviceAgentParseBool(args[@"doubao_seed_enable_session_cache"], YES));
+    next[kOnDeviceAgentDoubaoSeedEnableSessionCacheKey] = @(OnDeviceAgentParseBool(args[@"doubao_seed_enable_session_cache"], YES));
   }
   if ([args objectForKey:@"remember_api_key"] != nil) {
-    self.config[kOnDeviceAgentRememberApiKeyKey] = @(OnDeviceAgentParseBool(args[@"remember_api_key"], NO));
+    next[kOnDeviceAgentRememberApiKeyKey] = @(OnDeviceAgentParseBool(args[@"remember_api_key"], NO));
   }
+
   if ([args objectForKey:@"max_completion_tokens"] != nil) {
-    self.config[kOnDeviceAgentMaxCompletionTokensKey] = @(OnDeviceAgentParseInt(args[@"max_completion_tokens"], kOnDeviceAgentDefaultMaxCompletionTokens));
+    NSInteger parsed = 0;
+    if (!OnDeviceAgentParseIntStrict(args[@"max_completion_tokens"], &parsed) || parsed <= 0) {
+      if (message) {
+        *message = @"Invalid max_completion_tokens (must be integer > 0)";
+      }
+      return NO;
+    }
+    next[kOnDeviceAgentMaxCompletionTokensKey] = @(parsed);
   }
   if ([args objectForKey:@"max_steps"] != nil) {
-    self.config[kOnDeviceAgentMaxStepsKey] = @(OnDeviceAgentParseInt(args[@"max_steps"], kOnDeviceAgentDefaultMaxSteps));
+    NSInteger parsed = 0;
+    if (!OnDeviceAgentParseIntStrict(args[@"max_steps"], &parsed) || parsed <= 0) {
+      if (message) {
+        *message = @"Invalid max_steps (must be integer > 0)";
+      }
+      return NO;
+    }
+    next[kOnDeviceAgentMaxStepsKey] = @(parsed);
   }
   if ([args objectForKey:@"timeout_seconds"] != nil) {
-    self.config[kOnDeviceAgentTimeoutSecondsKey] = @(OnDeviceAgentParseDouble(args[@"timeout_seconds"], kOnDeviceAgentDefaultTimeoutSeconds));
+    double parsed = 0;
+    if (!OnDeviceAgentParseDoubleStrict(args[@"timeout_seconds"], &parsed) || parsed <= 0) {
+      if (message) {
+        *message = @"Invalid timeout_seconds (must be number > 0)";
+      }
+      return NO;
+    }
+    next[kOnDeviceAgentTimeoutSecondsKey] = @(parsed);
   }
   if ([args objectForKey:@"step_delay_seconds"] != nil) {
-    self.config[kOnDeviceAgentStepDelaySecondsKey] = @(OnDeviceAgentParseDouble(args[@"step_delay_seconds"], kOnDeviceAgentDefaultStepDelaySeconds));
+    double parsed = 0;
+    if (!OnDeviceAgentParseDoubleStrict(args[@"step_delay_seconds"], &parsed) || parsed <= 0) {
+      if (message) {
+        *message = @"Invalid step_delay_seconds (must be number > 0)";
+      }
+      return NO;
+    }
+    next[kOnDeviceAgentStepDelaySecondsKey] = @(parsed);
   }
+
   if ([args objectForKey:@"insecure_skip_tls_verify"] != nil) {
-    self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey] = @(OnDeviceAgentParseBool(args[@"insecure_skip_tls_verify"], NO));
+    next[kOnDeviceAgentInsecureSkipTLSVerifyKey] = @(OnDeviceAgentParseBool(args[@"insecure_skip_tls_verify"], NO));
   }
   if ([args objectForKey:@"debug_log_raw_assistant"] != nil) {
-    self.config[kOnDeviceAgentDebugLogRawAssistantKey] = @(OnDeviceAgentParseBool(args[@"debug_log_raw_assistant"], YES));
+    next[kOnDeviceAgentDebugLogRawAssistantKey] = @(OnDeviceAgentParseBool(args[@"debug_log_raw_assistant"], NO));
   }
   if ([args objectForKey:@"half_res_screenshot"] != nil) {
-    self.config[kOnDeviceAgentHalfResScreenshotKey] = @(OnDeviceAgentParseBool(args[@"half_res_screenshot"], YES));
+    next[kOnDeviceAgentHalfResScreenshotKey] = @(OnDeviceAgentParseBool(args[@"half_res_screenshot"], YES));
   }
   if ([args objectForKey:@"use_w3c_actions_for_swipe"] != nil) {
-    self.config[kOnDeviceAgentUseW3CActionsForSwipeKey] = @(OnDeviceAgentParseBool(args[@"use_w3c_actions_for_swipe"], YES));
+    next[kOnDeviceAgentUseW3CActionsForSwipeKey] = @(OnDeviceAgentParseBool(args[@"use_w3c_actions_for_swipe"], YES));
   }
 
+  self.config = next.copy;
   [self persistConfigToDefaults];
+  return YES;
 }
 
-- (NSDictionary *)safeConfigSnapshot
+- (NSDictionary *)safeConfigSnapshotWithDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt
 {
   NSMutableDictionary *cfg = [NSMutableDictionary dictionary];
   cfg[@"task"] = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentTaskKey]);
@@ -3188,12 +3743,16 @@ static long long OnDeviceAgentLL(id v)
 
   BOOL remember = OnDeviceAgentParseBool(self.config[kOnDeviceAgentRememberApiKeyKey], NO);
   NSString *apiKey = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentApiKeyKey]);
+  NSString *agentToken = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentAgentTokenKey]));
   cfg[@"api_key_set"] = @(apiKey.length > 0);
+  cfg[@"agent_token_set"] = @(agentToken.length > 0);
   cfg[@"remember_api_key"] = @(remember);
 
   cfg[@"use_custom_system_prompt"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseCustomSystemPromptKey], NO));
   cfg[@"system_prompt"] = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentCustomSystemPromptKey]);
-  cfg[@"default_system_prompt"] = OnDeviceAgentDefaultSystemPromptTemplate();
+  if (includeDefaultSystemPrompt) {
+    cfg[@"default_system_prompt"] = OnDeviceAgentDefaultSystemPromptTemplate();
+  }
   cfg[@"reasoning_effort"] = OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentReasoningEffortKey]);
   cfg[@"doubao_seed_enable_session_cache"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentDoubaoSeedEnableSessionCacheKey], YES));
   cfg[@"half_res_screenshot"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], YES));
@@ -3204,11 +3763,25 @@ static long long OnDeviceAgentLL(id v)
   cfg[@"timeout_seconds"] = @(OnDeviceAgentParseDouble(self.config[kOnDeviceAgentTimeoutSecondsKey], kOnDeviceAgentDefaultTimeoutSeconds));
   cfg[@"step_delay_seconds"] = @(OnDeviceAgentParseDouble(self.config[kOnDeviceAgentStepDelaySecondsKey], kOnDeviceAgentDefaultStepDelaySeconds));
   cfg[@"insecure_skip_tls_verify"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey], NO));
-  cfg[@"debug_log_raw_assistant"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], YES));
+  cfg[@"debug_log_raw_assistant"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], NO));
   return cfg.copy;
 }
 
+- (NSString *)agentToken
+{
+  __block NSString *token = @"";
+  dispatch_sync(self.stateQueue, ^{
+    token = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentAgentTokenKey]));
+  });
+  return token ?: @"";
+}
+
 - (NSDictionary *)status
+{
+  return [self statusWithDefaultSystemPrompt:NO];
+}
+
+- (NSDictionary *)statusWithDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt
 {
   __block NSDictionary *st = nil;
   dispatch_sync(self.stateQueue, ^{
@@ -3223,7 +3796,7 @@ static long long OnDeviceAgentLL(id v)
     st = @{
       @"running": @(self.running),
       @"last_message": self.lastMessage ?: @"",
-      @"config": [self safeConfigSnapshot],
+      @"config": [self safeConfigSnapshotWithDefaultSystemPrompt:includeDefaultSystemPrompt],
       @"notes": notes,
       @"token_usage": tokens,
       @"log_lines": @(self.logLines.count),
@@ -3262,34 +3835,34 @@ static long long OnDeviceAgentLL(id v)
     return NO;
   }
 
-  NSInteger maxSteps = OnDeviceAgentParseInt(cfg[kOnDeviceAgentMaxStepsKey], kOnDeviceAgentDefaultMaxSteps);
-  if (maxSteps <= 0) {
+  NSInteger maxSteps = 0;
+  if (!OnDeviceAgentParseIntStrict(cfg[kOnDeviceAgentMaxStepsKey], &maxSteps) || maxSteps <= 0) {
     if (message) {
-      *message = @"Invalid max_steps (must be > 0)";
+      *message = @"Invalid max_steps (must be integer > 0)";
     }
     return NO;
   }
 
-  double timeout = OnDeviceAgentParseDouble(cfg[kOnDeviceAgentTimeoutSecondsKey], kOnDeviceAgentDefaultTimeoutSeconds);
-  if (timeout <= 0) {
+  double timeout = 0;
+  if (!OnDeviceAgentParseDoubleStrict(cfg[kOnDeviceAgentTimeoutSecondsKey], &timeout) || timeout <= 0) {
     if (message) {
-      *message = @"Invalid timeout_seconds (must be > 0)";
+      *message = @"Invalid timeout_seconds (must be number > 0)";
     }
     return NO;
   }
 
-  double stepDelay = OnDeviceAgentParseDouble(cfg[kOnDeviceAgentStepDelaySecondsKey], kOnDeviceAgentDefaultStepDelaySeconds);
-  if (stepDelay <= 0) {
+  double stepDelay = 0;
+  if (!OnDeviceAgentParseDoubleStrict(cfg[kOnDeviceAgentStepDelaySecondsKey], &stepDelay) || stepDelay <= 0) {
     if (message) {
-      *message = @"Invalid step_delay_seconds (must be > 0)";
+      *message = @"Invalid step_delay_seconds (must be number > 0)";
     }
     return NO;
   }
 
-  NSInteger maxTokens = OnDeviceAgentParseInt(cfg[kOnDeviceAgentMaxCompletionTokensKey], kOnDeviceAgentDefaultMaxCompletionTokens);
-  if (maxTokens <= 0) {
+  NSInteger maxTokens = 0;
+  if (!OnDeviceAgentParseIntStrict(cfg[kOnDeviceAgentMaxCompletionTokensKey], &maxTokens) || maxTokens <= 0) {
     if (message) {
-      *message = @"Invalid max_completion_tokens (must be > 0)";
+      *message = @"Invalid max_completion_tokens (must be integer > 0)";
     }
     return NO;
   }
@@ -3302,7 +3875,12 @@ static long long OnDeviceAgentLL(id v)
   __block NSError *err = nil;
 
   dispatch_sync(self.stateQueue, ^{
-    [self updateConfigWithArguments:args ?: @{}];
+    NSString *updateErr = nil;
+    if (![self updateConfigWithArguments:args ?: @{} errorMessage:&updateErr]) {
+      ok = NO;
+      err = [NSError errorWithDomain:@"OnDeviceAgent" code:22 userInfo:@{NSLocalizedDescriptionKey: updateErr ?: @"Invalid config update"}];
+      return;
+    }
 
     if (self.running) {
       ok = NO;
@@ -3518,10 +4096,10 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      </div>\n"
     @"    </div>\n"
     @"    <textarea id=\"system_prompt\" class=\"mono\" placeholder=\"(default system prompt)\" data-i18n-placeholder=\"ph_system_prompt\"></textarea>\n"
-    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"insecure_skip_tls_verify\" /> <span data-i18n=\"cb_insecure_skip_tls\">Insecure: skip TLS verify (debug only)</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"insecure_skip_tls_verify\" /> <span data-i18n=\"cb_insecure_skip_tls\">Insecure TLS (model requests only)</span></label>\n"
     @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"half_res_screenshot\" /> <span data-i18n=\"cb_half_res_screenshot\">Half-resolution screenshots</span></label>\n"
     @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"use_w3c_actions_for_swipe\" /> <span data-i18n=\"cb_use_w3c_actions_for_swipe\">Use W3C actions for swipe</span></label>\n"
-    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"debug_log_raw_assistant\" /> <span data-i18n=\"cb_debug_raw\">Debug: capture raw LLM conversation (images are placeholders; may contain sensitive info)</span></label>\n"
+    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"debug_log_raw_assistant\" /> <span data-i18n=\"cb_debug_raw\">Debug raw conversation (sensitive fields redacted)</span></label>\n"
     @"    <div id=\"form_error\" class=\"error\" style=\"display:none\"></div>\n"
     @"    <div class=\"actions\">\n"
     @"      <button class=\"primary\" onclick=\"saveCfg()\" data-i18n=\"btn_save\">Save</button>\n"
@@ -3585,10 +4163,10 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        cb_use_custom_system_prompt: 'Use custom system prompt',\n"
         @"        btn_restore_system_prompt: 'Restore default template',\n"
         @"        ph_system_prompt: '(default system prompt)',\n"
-        @"        cb_insecure_skip_tls: 'Insecure: skip TLS verify (debug only)',\n"
+        @"        cb_insecure_skip_tls: 'Insecure TLS (model requests only; debug only; MITM risk)',\n"
         @"        cb_half_res_screenshot: 'Half-resolution screenshots',\n"
         @"        cb_use_w3c_actions_for_swipe: 'Use W3C actions for swipe',\n"
-        @"        cb_debug_raw: 'Debug: capture raw LLM conversation (images are placeholders; may contain sensitive info)',\n"
+        @"        cb_debug_raw: 'Debug raw conversation (OFF by default; API key / Authorization / image base64 are redacted)',\n"
     @"        btn_save: 'Save',\n"
     @"        btn_start: 'Start',\n"
     @"        btn_stop: 'Stop',\n"
@@ -3644,10 +4222,10 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        cb_use_custom_system_prompt: '使用自定义系统提示词',\n"
         @"        btn_restore_system_prompt: '恢复默认模板',\n"
         @"        ph_system_prompt: '（默认系统提示词）',\n"
-        @"        cb_insecure_skip_tls: '不安全：跳过 TLS 校验（仅调试）',\n"
+        @"        cb_insecure_skip_tls: '不安全 TLS（仅模型请求；仅调试；有中间人风险）',\n"
         @"        cb_half_res_screenshot: '半分辨率截图',\n"
         @"        cb_use_w3c_actions_for_swipe: 'Swipe 使用 W3C actions',\n"
-        @"        cb_debug_raw: '调试：记录原始对话（图片会用占位符；可能包含敏感信息）',\n"
+        @"        cb_debug_raw: '调试：记录原始对话（默认关闭；API key / Authorization / 图片 base64 会脱敏）',\n"
     @"        btn_save: '保存',\n"
     @"        btn_start: '开始',\n"
     @"        btn_stop: '停止',\n"
@@ -3775,11 +4353,45 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"        await new Promise(r => setTimeout(r, 50));\n"
     @"      }\n"
     @"    }\n"
+    @"    function persistAgentToken(token){\n"
+    @"      const tkn = (token || '').trim();\n"
+    @"      if (!tkn.length) return '';\n"
+    @"      try { localStorage.setItem('ondevice_agent_token', tkn); } catch (e) {}\n"
+    @"      try { document.cookie = `ondevice_agent_token=${encodeURIComponent(tkn)}; path=/agent; samesite=lax`; } catch (e) {}\n"
+    @"      return tkn;\n"
+    @"    }\n"
+    @"    function currentAgentToken(){\n"
+    @"      try {\n"
+    @"        const qs = new URLSearchParams(window.location.search || '');\n"
+    @"        const fromQuery = (qs.get('token') || '').trim();\n"
+    @"        if (fromQuery.length > 0) {\n"
+    @"          const persisted = persistAgentToken(fromQuery);\n"
+    @"          try {\n"
+    @"            qs.delete('token');\n"
+    @"            const next = window.location.pathname + (qs.toString() ? ('?' + qs.toString()) : '') + (window.location.hash || '');\n"
+    @"            window.history.replaceState({}, '', next);\n"
+    @"          } catch (e) {}\n"
+    @"          return persisted;\n"
+    @"        }\n"
+    @"        const fromStorage = (localStorage.getItem('ondevice_agent_token') || '').trim();\n"
+    @"        return persistAgentToken(fromStorage);\n"
+    @"      } catch (e) {\n"
+    @"        return '';\n"
+    @"      }\n"
+    @"    }\n"
     @"    async function api(path, method, body){\n"
     @"      const opts = {method: method || 'GET'};\n"
-    @"      if (body){ opts.headers = {'Content-Type':'application/json'}; opts.body = JSON.stringify(body); }\n"
+    @"      const token = currentAgentToken();\n"
+    @"      const headers = {};\n"
+    @"      if (body) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }\n"
+    @"      if (token.length > 0) { headers['X-OnDevice-Agent-Token'] = token; }\n"
+    @"      if (Object.keys(headers).length > 0) { opts.headers = headers; }\n"
     @"      const r = await fetch(path, opts);\n"
-    @"      const j = await r.json();\n"
+    @"      const j = await r.json().catch(() => ({}));\n"
+    @"      if (!r.ok) {\n"
+    @"        const msg = ((j.value && j.value.error) || j.error || `HTTP ${r.status}`);\n"
+    @"        throw new Error(msg);\n"
+    @"      }\n"
     @"      return j.value || {};\n"
     @"    }\n"
 	    @"    function restoreSystemPromptDefault(){\n"
@@ -3816,6 +4428,12 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      if (key.length > 0) { cfg.api_key = key; }\n"
     @"      return cfg;\n"
     @"    }\n"
+    @"    function isStrictIntegerString(raw){\n"
+    @"      return /^[+-]?\\d+$/.test(raw);\n"
+    @"    }\n"
+    @"    function isStrictNumberString(raw){\n"
+    @"      return /^[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?$/.test(raw);\n"
+    @"    }\n"
     @"    function validateBeforeStart(){\n"
     @"      const errors = [];\n"
     @"      const maxStepsEl = document.getElementById('max_steps');\n"
@@ -3829,8 +4447,8 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      const maxStepsRaw = ((maxStepsEl && maxStepsEl.value) || '').trim();\n"
     @"      let maxStepsBad = false;\n"
     @"      if (maxStepsRaw.length) {\n"
-    @"        const maxSteps = parseInt(maxStepsRaw, 10);\n"
-    @"        maxStepsBad = !(Number.isFinite(maxSteps) && maxSteps > 0);\n"
+    @"        const maxSteps = Number(maxStepsRaw);\n"
+    @"        maxStepsBad = !(isStrictIntegerString(maxStepsRaw) && Number.isFinite(maxSteps) && maxSteps > 0);\n"
     @"      }\n"
     @"      setInvalid(maxStepsEl, maxStepsBad);\n"
     @"      if (maxStepsBad) errors.push(t('err_max_steps_gt0'));\n"
@@ -3838,8 +4456,8 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      const timeoutRaw = ((timeoutEl && timeoutEl.value) || '').trim();\n"
     @"      let timeoutBad = false;\n"
     @"      if (timeoutRaw.length) {\n"
-    @"        const timeout = parseFloat(timeoutRaw);\n"
-    @"        timeoutBad = !(Number.isFinite(timeout) && timeout > 0);\n"
+    @"        const timeout = Number(timeoutRaw);\n"
+    @"        timeoutBad = !(isStrictNumberString(timeoutRaw) && Number.isFinite(timeout) && timeout > 0);\n"
     @"      }\n"
     @"      setInvalid(timeoutEl, timeoutBad);\n"
     @"      if (timeoutBad) errors.push(t('err_timeout_gt0'));\n"
@@ -3847,8 +4465,8 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      const delayRaw = ((delayEl && delayEl.value) || '').trim();\n"
     @"      let delayBad = false;\n"
     @"      if (delayRaw.length) {\n"
-    @"        const delay = parseFloat(delayRaw);\n"
-    @"        delayBad = !(Number.isFinite(delay) && delay > 0);\n"
+    @"        const delay = Number(delayRaw);\n"
+    @"        delayBad = !(isStrictNumberString(delayRaw) && Number.isFinite(delay) && delay > 0);\n"
     @"      }\n"
     @"      setInvalid(delayEl, delayBad);\n"
     @"      if (delayBad) errors.push(t('err_step_delay_gt0'));\n"
@@ -3856,8 +4474,8 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      const tokensRaw = ((tokensEl && tokensEl.value) || '').trim();\n"
     @"      let tokensBad = false;\n"
     @"      if (tokensRaw.length) {\n"
-    @"        const tokens = parseInt(tokensRaw, 10);\n"
-    @"        tokensBad = !(Number.isFinite(tokens) && tokens > 0);\n"
+    @"        const tokens = Number(tokensRaw);\n"
+    @"        tokensBad = !(isStrictIntegerString(tokensRaw) && Number.isFinite(tokens) && tokens > 0);\n"
     @"      }\n"
     @"      setInvalid(tokensEl, tokensBad);\n"
     @"      if (tokensBad) errors.push(`${tokenLabel} ${t('err_must_be_gt0')}`);\n"
@@ -3883,7 +4501,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      document.getElementById('insecure_skip_tls_verify').checked = !!cfg.insecure_skip_tls_verify;\n"
     @"      document.getElementById('half_res_screenshot').checked = !!cfg.half_res_screenshot;\n"
     @"      document.getElementById('use_w3c_actions_for_swipe').checked = (cfg.use_w3c_actions_for_swipe !== false);\n"
-    @"      document.getElementById('debug_log_raw_assistant').checked = (cfg.debug_log_raw_assistant !== false);\n"
+    @"      document.getElementById('debug_log_raw_assistant').checked = !!cfg.debug_log_raw_assistant;\n"
     @"      if (cfg.api_key_set) {\n"
     @"        document.getElementById('api_key').placeholder = t('ph_api_key_set');\n"
     @"      }\n"
@@ -3981,6 +4599,7 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"    }\n"
     @"    async function saveCfg(){\n"
     @"      await commitIME();\n"
+    @"      if (!validateBeforeStart()) return;\n"
     @"      await api('/agent/config', 'POST', cfgFromUI());\n"
     @"      dirty = false;\n"
     @"      await refresh();\n"
@@ -3999,8 +4618,9 @@ static NSString *OnDeviceAgentPageHTML(void)
 	    @"      await api('/agent/stop', 'POST');\n"
 	    @"      await refresh();\n"
 	    @"    }\n"
-	    @"    applyI18n();\n"
-	    @"    initDirtyTracking();\n"
+    @"    applyI18n();\n"
+    @"    initDirtyTracking();\n"
+    @"    currentAgentToken();\n"
     @"    {\n"
     @"      const modeEl = document.getElementById('chat_mode');\n"
     @"      if (modeEl) {\n"
@@ -4152,11 +4772,45 @@ static NSString *OnDeviceAgentEditPageHTML(void)
     @"        await new Promise(r => setTimeout(r, 50));\n"
     @"      }\n"
     @"    }\n"
+    @"    function persistAgentToken(token){\n"
+    @"      const tkn = (token || '').trim();\n"
+    @"      if (!tkn.length) return '';\n"
+    @"      try { localStorage.setItem('ondevice_agent_token', tkn); } catch (e) {}\n"
+    @"      try { document.cookie = `ondevice_agent_token=${encodeURIComponent(tkn)}; path=/agent; samesite=lax`; } catch (e) {}\n"
+    @"      return tkn;\n"
+    @"    }\n"
+    @"    function currentAgentToken(){\n"
+    @"      try {\n"
+    @"        const qs = new URLSearchParams(window.location.search || '');\n"
+    @"        const fromQuery = (qs.get('token') || '').trim();\n"
+    @"        if (fromQuery.length > 0) {\n"
+    @"          const persisted = persistAgentToken(fromQuery);\n"
+    @"          try {\n"
+    @"            qs.delete('token');\n"
+    @"            const next = window.location.pathname + (qs.toString() ? ('?' + qs.toString()) : '') + (window.location.hash || '');\n"
+    @"            window.history.replaceState({}, '', next);\n"
+    @"          } catch (e) {}\n"
+    @"          return persisted;\n"
+    @"        }\n"
+    @"        const fromStorage = (localStorage.getItem('ondevice_agent_token') || '').trim();\n"
+    @"        return persistAgentToken(fromStorage);\n"
+    @"      } catch (e) {\n"
+    @"        return '';\n"
+    @"      }\n"
+    @"    }\n"
     @"    async function api(path, method, body){\n"
     @"      const opts = {method: method || 'GET'};\n"
-    @"      if (body){ opts.headers = {'Content-Type':'application/json'}; opts.body = JSON.stringify(body); }\n"
+    @"      const token = currentAgentToken();\n"
+    @"      const headers = {};\n"
+    @"      if (body){ headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }\n"
+    @"      if (token.length > 0) { headers['X-OnDevice-Agent-Token'] = token; }\n"
+    @"      if (Object.keys(headers).length > 0) { opts.headers = headers; }\n"
     @"      const r = await fetch(path, opts);\n"
-    @"      const j = await r.json();\n"
+    @"      const j = await r.json().catch(() => ({}));\n"
+    @"      if (!r.ok) {\n"
+    @"        const msg = ((j.value && j.value.error) || j.error || `HTTP ${r.status}`);\n"
+    @"        throw new Error(msg);\n"
+    @"      }\n"
     @"      return j.value || {};\n"
     @"    }\n"
     @"    function updateViewport(){\n"
@@ -4235,6 +4889,7 @@ static NSString *OnDeviceAgentEditPageHTML(void)
     @"        window.visualViewport.addEventListener('scroll', updateViewport);\n"
     @"      } catch (e) {}\n"
     @"    }\n"
+    @"    currentAgentToken();\n"
     @"    load();\n"
     @"  </script>\n";
 
@@ -4279,6 +4934,10 @@ static NSString *OnDeviceAgentEditPageHTML(void)
 
 + (id<FBResponsePayload>)handleGetPage:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentPageRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   OnDeviceAgentTriggerWirelessDataPromptIfNeeded();
   return [[OnDeviceAgentTextPayload alloc] initWithText:OnDeviceAgentPageHTML()
                                      contentType:@"text/html;charset=UTF-8"
@@ -4287,6 +4946,10 @@ static NSString *OnDeviceAgentEditPageHTML(void)
 
 + (id<FBResponsePayload>)handleGetEditPage:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentPageRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   return [[OnDeviceAgentTextPayload alloc] initWithText:OnDeviceAgentEditPageHTML()
                                      contentType:@"text/html;charset=UTF-8"
                                       statusCode:kHTTPStatusCodeOK];
@@ -4294,24 +4957,41 @@ static NSString *OnDeviceAgentEditPageHTML(void)
 
 + (id<FBResponsePayload>)handleGetStatus:(FBRouteRequest *)request
 {
-  return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  BOOL includeDefaultSystemPrompt = OnDeviceAgentParseBool(request.parameters[@"include_default_system_prompt"], NO);
+  return FBResponseWithObject([[OnDeviceAgentManager shared] statusWithDefaultSystemPrompt:includeDefaultSystemPrompt]);
 }
 
 + (id<FBResponsePayload>)handleGetLogs:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   return FBResponseWithObject(@{@"lines": [[OnDeviceAgentManager shared] logs]});
 }
 
 + (id<FBResponsePayload>)handleGetChat:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] chat]});
 }
 
 + (id<FBResponsePayload>)handleGetStepScreenshot:(FBRouteRequest *)request
 {
-  NSInteger step = OnDeviceAgentParseInt(request.parameters[@"step"], -1);
-  if (step < 0) {
-    return FBResponseWithObject(@{@"ok": @NO, @"error": @"Missing query parameter: step"});
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  NSInteger step = -1;
+  if (!OnDeviceAgentParseIntStrict(request.parameters[@"step"], &step) || step < 0) {
+    return OnDeviceAgentBadRequestPayload(@"Invalid query parameter: step (must be integer >= 0)");
   }
   NSString *b64 = [[OnDeviceAgentManager shared] stepScreenshotBase64ForStep:step] ?: @"";
   if (b64.length == 0) {
@@ -4322,14 +5002,27 @@ static NSString *OnDeviceAgentEditPageHTML(void)
 
 + (id<FBResponsePayload>)handlePostConfig:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  __block BOOL ok = YES;
+  __block NSString *errMsg = nil;
   dispatch_sync([OnDeviceAgentManager shared].stateQueue, ^{
-    [[OnDeviceAgentManager shared] updateConfigWithArguments:request.arguments ?: @{}];
+    ok = [[OnDeviceAgentManager shared] updateConfigWithArguments:request.arguments ?: @{} errorMessage:&errMsg];
   });
+  if (!ok) {
+    return OnDeviceAgentBadRequestPayload(errMsg ?: @"Invalid config update");
+  }
   return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
 }
 
 + (id<FBResponsePayload>)handlePostStart:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   NSError *err = nil;
   if (![[OnDeviceAgentManager shared] startWithArguments:request.arguments ?: @{} error:&err]) {
     return FBResponseWithObject(@{@"ok": @NO, @"error": err.localizedDescription ?: @"start failed", @"status": [[OnDeviceAgentManager shared] status]});
@@ -4339,18 +5032,30 @@ static NSString *OnDeviceAgentEditPageHTML(void)
 
 + (id<FBResponsePayload>)handlePostStop:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   [[OnDeviceAgentManager shared] stop];
   return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
 }
 
 + (id<FBResponsePayload>)handlePostReset:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   [[OnDeviceAgentManager shared] resetRuntime];
   return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
 }
 
 + (id<FBResponsePayload>)handlePostFactoryReset:(FBRouteRequest *)request
 {
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
   [[OnDeviceAgentManager shared] factoryReset];
   return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
 }

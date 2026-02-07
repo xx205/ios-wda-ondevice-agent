@@ -1,7 +1,25 @@
 import CoreGraphics
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
+#if canImport(UIKit)
+extension Image {
+  init(platformImage: PlatformImage) {
+    self.init(uiImage: platformImage)
+  }
+}
+#elseif canImport(AppKit)
+extension Image {
+  init(platformImage: PlatformImage) {
+    self.init(nsImage: platformImage)
+  }
+}
+#endif
 
 struct ActionAnnotation: Equatable {
   enum Kind: Equatable {
@@ -87,12 +105,12 @@ struct ActionAnnotation: Equatable {
 }
 
 struct AnnotatedScreenshotCard: View {
-  let image: UIImage
+  let image: PlatformImage
   let annotation: ActionAnnotation?
 
   var body: some View {
     ZStack {
-      Image(uiImage: image)
+      Image(platformImage: image)
         .resizable()
         .scaledToFit()
 
@@ -207,4 +225,3 @@ private struct ActionOverlay: View {
     return path
   }
 }
-

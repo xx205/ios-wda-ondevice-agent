@@ -140,6 +140,7 @@ struct AgentConfig: Decodable {
   let apiMode: String
 
   let apiKeySet: Bool
+  let agentTokenSet: Bool
   let rememberApiKey: Bool
 
   let useCustomSystemPrompt: Bool
@@ -165,6 +166,7 @@ struct AgentConfig: Decodable {
     case model
     case apiMode = "api_mode"
     case apiKeySet = "api_key_set"
+    case agentTokenSet = "agent_token_set"
     case rememberApiKey = "remember_api_key"
     case useCustomSystemPrompt = "use_custom_system_prompt"
     case systemPrompt = "system_prompt"
@@ -187,6 +189,7 @@ struct AgentConfig: Decodable {
     model = ""
     apiMode = ""
     apiKeySet = false
+    agentTokenSet = false
     rememberApiKey = false
     useCustomSystemPrompt = false
     systemPrompt = ""
@@ -211,6 +214,7 @@ struct AgentConfig: Decodable {
     apiMode = c.decodeStringOrEmpty(forKey: .apiMode)
 
     apiKeySet = c.decodeBoolLike(forKey: .apiKeySet)
+    agentTokenSet = c.decodeBoolLike(forKey: .agentTokenSet)
     rememberApiKey = c.decodeBoolLike(forKey: .rememberApiKey)
 
     useCustomSystemPrompt = c.decodeBoolLike(forKey: .useCustomSystemPrompt)
@@ -304,6 +308,7 @@ struct AgentConfigRequest: Encodable {
   var base_url: String
   var model: String
   var api_mode: String
+  var agent_token: String?
   var use_custom_system_prompt: Bool
   var system_prompt: String
   var remember_api_key: Bool
