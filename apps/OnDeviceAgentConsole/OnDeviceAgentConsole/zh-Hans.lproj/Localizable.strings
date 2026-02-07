@@ -10,8 +10,8 @@
 "Stopped" = "已停止";
 "Token Usage" = "Token 用量";
 "Wi‑Fi unreachable" = "Wi‑Fi 不可达";
-"Runner is reachable on 127.0.0.1 but not on Wi‑Fi (%@). If Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner." = "Runner 在 127.0.0.1 可用，但在 Wi‑Fi（%@）不可达。\n若 Wi‑Fi 访问失败：设置 → Apps → Runner → Wireless Data → 选 WLAN/WLAN & Cellular Data，然后重开 Runner。";
-"Tip: If Runner was just installed or updated, iOS may reset Runner’s Wireless Data permission to Off.\nIf Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner." = "提示：如果 Runner 刚安装或更新，iOS 可能会把 Runner 的无线数据权限重置为关闭。\n若 Wi‑Fi 访问失败：设置 → Apps → Runner → Wireless Data → 选 WLAN/WLAN & Cellular Data，然后重开 Runner。";
+"Runner is reachable on 127.0.0.1 but not on Wi‑Fi (%@). If Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner." = "Runner 在 127.0.0.1 可用，但在 Wi‑Fi（%@）不可达。\n若 Wi‑Fi 访问失败：设置 → App → WebDriverAgentRunner-Runner → 无线数据 → 选“无线局域网”或“无线局域网与蜂窝数据”，然后重开 Runner。";
+"Tip: If Runner was just installed or updated, iOS may reset Runner’s Wireless Data permission to Off.\nIf Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner." = "提示：如果 Runner 刚安装或更新，iOS 可能会把 Runner 的无线数据权限重置为关闭。\n若 Wi‑Fi 访问失败：设置 → App → WebDriverAgentRunner-Runner → 无线数据 → 选“无线局域网”或“无线局域网与蜂窝数据”，然后重开 Runner。";
 "Check again" = "重新检测";
 
 "Requests: %d" = "请求数：%d";
@@ -22,12 +22,12 @@
 "Check status" = "检查状态";
 "Model service" = "模型服务";
 "Runner (WebDriverAgentRunner-Runner)" = "Runner（WebDriverAgentRunner-Runner）";
-"Runner address" = "Runner 地址";
-"The address used to connect to Runner (port 8100). On iPhone, use http://127.0.0.1:8100." = "用于连接 Runner 的地址（端口 8100）。\n• iPhone 上通常用：http://127.0.0.1:8100\n• 局域网调试可填 iPhone 的 Wi‑Fi IP（需为 Runner 开启 Wireless Data）";
+"Runner URL" = "Runner 连接地址";
+"Runner is the WebDriverAgentRunner-Runner app on your iPhone. This URL connects the Console to Runner (port 8100).\n• On iPhone, use: http://127.0.0.1:8100\n• For LAN debugging, use the iPhone’s Wi‑Fi IP (make sure Runner’s Wireless Data is enabled)." = "Runner 是 iPhone 上的 WebDriverAgentRunner-Runner 应用（负责执行点击/滑动/截图等自动化）。本 App 通过这个地址连接 Runner（端口 8100）。\n• iPhone 上通常用：http://127.0.0.1:8100\n• 局域网调试可填 iPhone 的 Wi‑Fi IP";
 "Service URL (Base URL, OpenAI-compatible)" = "服务地址（Base URL，OpenAI 兼容）";
 "Required. Examples:\nDoubao: https://ark.cn-beijing.volces.com/api/v3/responses\nOpenAI: https://api.openai.com/v1" = "必填。示例：\n豆包：https://ark.cn-beijing.volces.com/api/v3/responses\nOpenAI：https://api.openai.com/v1";
 "Required. Example: doubao-seed-1-8-251228" = "必填。示例：doubao-seed-1-8-251228";
-"Optional if already set on device. Leave empty to keep the existing key." = "如果本机已保存过密钥，这里可留空；留空会继续使用已保存的密钥。";
+"Required (unless already saved on device). Leave empty to keep the existing key." = "必填（若本机已保存过密钥，可留空继续使用）。";
 "Doubao Seed: use Responses. Most OpenAI-compatible services: try Responses first; if unsupported, switch to Chat Completions." = "豆包 Seed：推荐用 Responses。大多数 OpenAI 兼容服务：先试 Responses；不支持再切到 Chat Completions。";
 "Use Chat Completions when Responses is unsupported. More compatible, but usually uses more tokens." = "当服务不支持 Responses 时使用 Chat Completions。兼容性更好，但通常更耗 token。";
 "Per-step max output (Token)" = "每步最大输出（Token）";
@@ -44,6 +44,18 @@
 "(set on device)" = "（已在设备上设置）";
 "Show API key" = "显示密钥";
 "Remember API key on device" = "在本机保存密钥";
+"Agent token (for LAN)" = "Agent 令牌（局域网）";
+"(set on Runner)" = "（Runner 已设置）";
+"optional for localhost" = "本机访问可留空";
+"Protects /agent/* over Wi‑Fi/LAN. If empty, Runner only allows localhost." = "用于保护局域网下的 /agent/* 接口。留空时，Runner 只允许本机访问。";
+"Update token" = "更新令牌";
+"Copy access link" = "复制访问链接";
+"Update token generates a new token and syncs it to Runner." = "更新令牌会生成新的令牌，并同步到 Runner。";
+"Copy access link copies a one-time access link using current token." = "复制访问链接会使用当前令牌生成一次性访问链接并复制到剪贴板。";
+"Copy access link requires token. Tap “Update token” first." = "复制访问链接需要令牌，请先点击“更新令牌”。";
+"Cannot build access link. If Runner URL is localhost, set Runner URL to the iPhone’s Wi‑Fi IP so the link works over LAN." = "暂时无法生成访问链接。如果 Runner 连接地址是 localhost，请把 Runner 连接地址改为 iPhone 的 Wi‑Fi IP，确保局域网可访问。";
+"Generate" = "生成";
+"Copy" = "复制";
 
 "Task" = "任务";
 "Edit Task" = "编辑任务";
@@ -64,11 +76,16 @@
 "Responses API: max_output_tokens. Larger lets the model think/plan longer." = "Responses API：max_output_tokens。更大可让模型思考/规划更久。";
 "Chat Completions: max_completion_tokens. Larger lets the model think/plan longer." = "Chat Completions：max_completion_tokens。更大可让模型思考/规划更久。";
 "Per-step model request timeout. Increase if the model is slow." = "单次模型请求的超时时间。模型较慢时可调大。";
-"Optional. Only some models support this (e.g. doubao-seed). Leave empty to use the model default. Examples: minimal / low / medium / high." = "可选。仅部分模型支持（如 doubao-seed）。留空就会使用模型默认；可填：minimal / low / medium / high。";
+"Optional. Only some models support this (e.g. doubao-seed). Leave empty to use the model default. Examples: minimal / low / medium / high." = "可选。仅部分模型支持（如 doubao-seed）。留空就会使用模型默认。";
 "e.g. medium" = "例如：medium";
 
 "System Prompt" = "系统提示词";
+"Prompt text" = "提示词内容";
 "Use custom system prompt" = "使用自定义系统提示词";
+"To apply the custom system prompt, enable it in Advanced." = "要使用自定义系统提示词，请先在“高级（可选）”中开启。";
+"When enabled, Runner will use the text from System Prompt." = "开启后，Runner 会使用“系统提示词”中填写的内容。";
+"When enabled, Runner will use the Prompt text below." = "开启后，Runner 会使用下方“提示词内容”。";
+"Date placeholders (replaced at runtime):" = "日期占位符（运行时替换）：";
 "Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):" = "自定义系统提示词仅在勾选后生效。日期占位符（运行时替换）：";
 "Edit System Prompt" = "编辑系统提示词";
 "Restore Default Template" = "恢复默认模板";
@@ -78,17 +95,17 @@
 "Reset clears local runtime data (logs/chat/screenshots/Notes/token usage); Factory Reset also clears saved settings and the remembered API key; neither affects your model service." = "重置只会清理本机数据，不会影响你的模型服务。\n• 重置运行记录：清空日志/对话/截图/备注/Token 用量；保留已保存的配置。\n• 恢复默认设置：在上面基础上，还会清空已保存的配置（含 API 密钥、自定义系统提示词等）。";
 "Reasoning effort (optional)" = "思考强度（可选）";
 "Enable Session Cache (Doubao Seed)" = "启用会话缓存（豆包 Seed）";
-"Responses only. Enables session caching for doubao-seed models to reduce tokens and improve stability." = "仅限 Responses。为 doubao-seed 模型启用会话缓存，以减少 token 用量并提升稳定性。";
-"Half-resolution screenshots" = "半分辨率截图";
-"Shrinks screenshots by 50% before sending to the model, reducing Token usage and often speeding up responses." = "发送给模型前将截图缩小一半，以减少 Token 用量并加快响应。";
+"Responses only. Enables session caching for doubao-seed models to reduce tokens and improve stability." = "仅限 Responses API 模式。为 doubao-seed 模型启用会话缓存，以减少 token 用量并提升稳定性。";
+"Half-resolution screenshots" = "截图分辨率减半";
+"Shrinks screenshots by 50% before sending to the model, reducing Token usage and often speeding up responses." = "发送给模型前，将截图缩小到原来的 50%，减少 Token 用量并加快响应。";
 "Use W3C actions for swipe" = "Swipe 使用 W3C actions";
 "Recommended for games: makes swipe closer to a real finger gesture." = "推荐用于游戏：让 Swipe 更接近真实手指手势。";
 "Annotate screenshots with actions" = "在截图上标注动作";
 "Overlays click/swipe markers on per-step screenshots in Chat." = "在对话中的每步截图上标出点击/滑动等动作位置。";
 "Debug raw conversation" = "调试：记录原始对话";
-"Stores per-step API request/response JSON (images are placeholders). May contain sensitive info." = "记录每步 API 请求/响应 JSON（图片会用占位符）。可能包含敏感信息。";
-"Insecure: skip TLS verify (model)" = "不安全：跳过 TLS 校验（模型）";
-"Allows HTTPS endpoints with invalid certificates. Debug only." = "允许 HTTPS 端点使用无效证书（仅调试）。";
+"Off by default. Stores per-step API request/response JSON with sensitive fields redacted (API key / Authorization / image base64)." = "默认关闭。记录每步 API 请求/响应 JSON，并对敏感字段脱敏（API key / Authorization / 图片 base64）。";
+"Insecure TLS (model requests only)" = "不安全 TLS（仅模型请求）";
+"Debug only. Skips certificate verification for model-service HTTPS requests and increases MITM risk." = "仅调试使用。跳过模型服务 HTTPS 证书校验，会增加中间人攻击风险。";
 
 "Validation" = "校验";
 "Import Config (QR)" = "导入配置（二维码）";
@@ -142,10 +159,27 @@
 "The agent writes here via the Note action." = "Agent 会通过 Note 动作把工作记忆写到这里。";
 
 /* Dynamic / errors */
+"Runner unavailable" = "Runner 未运行";
+"Cannot connect to Runner at %@. Make sure Runner is running, then try again." = "无法连接 Runner（%@）。请先打开 Runner 后重试。";
+"Details" = "详情";
+"Ready" = "就绪";
+"Needs setup" = "需配置";
+"Action required" = "需要完善设置";
+
 "Connection error: %@" = "连接错误：%@";
 "Execution error: %@" = "执行错误：%@";
 "Logs stale: %@" = "日志未更新：%@";
 "Chat stale: %@" = "对话未更新：%@";
+
+"Base URL is required" = "请填写 Base URL";
+"Model is required" = "请填写模型名称";
+"Task is required" = "请填写任务";
+"API Key is required" = "请填写 API 密钥（或先在设备上保存过密钥）";
+"Agent token is required for LAN access" = "局域网访问时请填写 Agent 令牌";
+"Max Steps must be > 0" = "最大步数必须大于 0";
+"Timeout (seconds) must be > 0" = "超时（秒）必须大于 0";
+"Step Delay (seconds) must be > 0" = "步间延迟（秒）必须大于 0";
+"Max Tokens must be > 0" = "最大输出 tokens 必须大于 0";
 
 "Camera unavailable" = "摄像头不可用";
 "Camera permission denied" = "摄像头权限被拒绝";

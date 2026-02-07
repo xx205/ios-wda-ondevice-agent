@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import SwiftUI
 import UIKit
 
@@ -10,4 +11,4 @@ struct OnDeviceAgentActivityView: UIViewControllerRepresentable {
 
   func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
-
+#endif

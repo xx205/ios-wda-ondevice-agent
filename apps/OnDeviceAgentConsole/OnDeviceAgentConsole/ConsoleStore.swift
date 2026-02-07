@@ -1,6 +1,17 @@
 import Darwin
 import Foundation
+import Security
+#if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
+#if canImport(UIKit)
+typealias PlatformImage = UIImage
+#elseif canImport(AppKit)
+typealias PlatformImage = NSImage
+#endif
 
 @MainActor
 final class ConsoleStore: ObservableObject {
@@ -88,6 +99,7 @@ final class ConsoleStore: ObservableObject {
     var apiMode: String = Defaults.apiMode
 
     var apiKey: String = ""
+    var agentToken: String = ""
     var showApiKey: Bool = false
     var rememberApiKey: Bool = false
 
@@ -99,7 +111,7 @@ final class ConsoleStore: ObservableObject {
     var maxCompletionTokens: String = "\(Defaults.maxCompletionTokens)"
 
     var reasoningEffort: String = ""
-    var debugLogRawAssistant: Bool = true
+    var debugLogRawAssistant: Bool = false
     var insecureSkipTLSVerify: Bool = false
     var halfResScreenshot: Bool = true
     var useW3CActionsForSwipe: Bool = true
@@ -114,6 +126,7 @@ final class ConsoleStore: ObservableObject {
   @Published var draft: Draft = Draft()
 
   @Published var status: AgentStatus?
+  @Published var defaultSystemPromptTemplate: String = ""
   @Published var logs: [String] = []
   @Published var chatItems: [AgentChatItem] = []
   @Published var stepActionAnnotations: [Int: ActionAnnotation] = [:]
@@ -122,7 +135,7 @@ final class ConsoleStore: ObservableObject {
   @Published var logsError: String?
   @Published var chatError: String?
   @Published var chatMode: ChatMode = .visual
-  @Published var stepScreenshots: [Int: UIImage] = [:]
+  @Published var stepScreenshots: [Int: PlatformImage] = [:]
   @Published var stepScreenshotErrors: [Int: String] = [:]
   @Published var localNetworkAccess: LocalNetworkAccessState?
 
@@ -215,6 +228,127 @@ final class ConsoleStore: ObservableObject {
     return URLComponents(url: url, resolvingAgainstBaseURL: false)
   }
 
+  private func isLoopbackHost(_ host: String) -> Bool {
+    let h = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "0:0:0:0:0:0:0:1"
+  }
+
+  private var isLoopbackRunnerURL: Bool {
+    guard let host = wdaURLComponents()?.host else { return false }
+    return isLoopbackHost(host)
+  }
+
+  private func makeClient() throws -> AgentClient {
+    try AgentClient(
+      wdaURL: wdaURL,
+      agentToken: draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+
+  func generateAgentToken() {
+    var bytes = [UInt8](repeating: 0, count: 24)
+    let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    if status == errSecSuccess {
+      let data = Data(bytes)
+      var token = data.base64EncodedString()
+      token = token.replacingOccurrences(of: "+", with: "-")
+      token = token.replacingOccurrences(of: "/", with: "_")
+      token = token.replacingOccurrences(of: "=", with: "")
+      draft.agentToken = token
+      return
+    }
+    draft.agentToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+  }
+
+  private var draftAgentTokenTrimmed: String {
+    draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func resolvedOneTimeAccessLinkComponents() -> URLComponents? {
+    guard var comps = wdaURLComponents() else { return nil }
+    guard let host = comps.host, !host.isEmpty else { return nil }
+
+    if isLoopbackHost(host) {
+      #if os(iOS)
+      guard let lanHost = localNetworkAccess?.wifiIPv4 ?? Self.wifiIPv4Address(), !lanHost.isEmpty else {
+        return nil
+      }
+      comps.host = lanHost
+      #else
+      // When Console is not running on the iPhone, we can't infer the iPhone's LAN IP from localhost.
+      return nil
+      #endif
+    }
+
+    comps.path = "/agent"
+    comps.queryItems = nil
+    comps.fragment = nil
+    return comps
+  }
+
+  private func oneTimeAccessLink(for token: String) -> String? {
+    let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedToken.isEmpty else { return nil }
+    guard var comps = resolvedOneTimeAccessLinkComponents() else { return nil }
+    comps.queryItems = [URLQueryItem(name: "token", value: normalizedToken)]
+    return comps.url?.absoluteString
+  }
+
+  var canBuildOneTimeAccessLink: Bool {
+    resolvedOneTimeAccessLinkComponents() != nil
+  }
+
+  var canCopyOneTimeAccessLink: Bool {
+    !draftAgentTokenTrimmed.isEmpty
+  }
+
+  var oneTimeAccessLink: String? {
+    oneTimeAccessLink(for: draftAgentTokenTrimmed)
+  }
+
+  func updateAgentToken() async -> Bool {
+    let previousToken = draft.agentToken
+    let previousTokenTrimmed = previousToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    generateAgentToken()
+    let token = draftAgentTokenTrimmed
+    guard !token.isEmpty else {
+      draft.agentToken = previousToken
+      return false
+    }
+    do {
+      // Auth uses the currently-set token (if any); the request body carries the new token.
+      let client = try AgentClient(wdaURL: wdaURL, agentToken: previousTokenTrimmed)
+      status = try await client.postAgentTokenOnly(token)
+      connectionError = nil
+      lastActionError = nil
+    } catch {
+      draft.agentToken = previousToken
+      lastActionError = error.localizedDescription
+      return false
+    }
+    return true
+  }
+
+  func copyOneTimeAccessLink() -> Bool {
+    guard !draftAgentTokenTrimmed.isEmpty else {
+      lastActionError = NSLocalizedString("Copy access link requires token. Tap “Update token” first.", comment: "")
+      return false
+    }
+    guard let link = oneTimeAccessLink else {
+      lastActionError = NSLocalizedString("Cannot build access link. If Runner URL is localhost, set Runner URL to the iPhone’s Wi‑Fi IP so the link works over LAN.", comment: "")
+      return false
+    }
+    #if canImport(UIKit)
+    UIPasteboard.general.string = link
+    #elseif canImport(AppKit)
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(link, forType: .string)
+    #endif
+    lastActionError = nil
+    return true
+  }
+
   private func statusURL(host: String) -> URL? {
     guard var comps = wdaURLComponents() else { return nil }
     comps.host = host
@@ -249,6 +383,11 @@ final class ConsoleStore: ObservableObject {
   }
 
   func checkLocalNetworkAccess(force: Bool = false) async {
+    #if !os(iOS)
+    localNetworkAccess = nil
+    return
+    #endif
+
     if localNetworkCheckInFlight {
       return
     }
@@ -571,11 +710,18 @@ final class ConsoleStore: ObservableObject {
     let gen = stateGeneration
 
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
-      let st = try await client.getStatus()
+      let client = try makeClient()
+      let needDefaultPrompt = defaultSystemPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      let st = try await client.getStatus(includeDefaultSystemPrompt: needDefaultPrompt)
 
       guard gen == stateGeneration else { return }
       status = st
+      if needDefaultPrompt {
+        let template = st.config.defaultSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !template.isEmpty {
+          defaultSystemPromptTemplate = template
+        }
+      }
       connectionError = nil
       Task { await self.checkLocalNetworkAccess(force: false) }
 
@@ -618,7 +764,7 @@ final class ConsoleStore: ObservableObject {
   func saveConfig() async {
     stateGeneration &+= 1
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
+      let client = try makeClient()
       let req = try makeConfigRequest()
       status = try await client.postConfig(req)
       connectionError = nil
@@ -635,7 +781,7 @@ final class ConsoleStore: ObservableObject {
     stepScreenshotLoading.removeAll()
     stepActionAnnotations.removeAll()
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
+      let client = try makeClient()
       let req = try makeConfigRequest()
       let resp = try await client.start(req)
       if resp.ok == false {
@@ -657,7 +803,7 @@ final class ConsoleStore: ObservableObject {
   func stopAgent() async {
     stateGeneration &+= 1
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
+      let client = try makeClient()
       status = try await client.stop()
       connectionError = nil
       lastActionError = nil
@@ -673,7 +819,7 @@ final class ConsoleStore: ObservableObject {
     stepScreenshotLoading.removeAll()
     stepActionAnnotations.removeAll()
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
+      let client = try makeClient()
       status = try await client.reset()
       connectionError = nil
       lastActionError = nil
@@ -691,7 +837,7 @@ final class ConsoleStore: ObservableObject {
     stepScreenshotLoading.removeAll()
     stepActionAnnotations.removeAll()
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
+      let client = try makeClient()
       let st = try await client.factoryReset()
       status = st
       connectionError = nil
@@ -699,6 +845,7 @@ final class ConsoleStore: ObservableObject {
 
       draft = Draft()
       didHydrateFromDevice = false
+      defaultSystemPromptTemplate = ""
       hydrateFromDevice(st.config)
       // Runner never returns the secret API key; after a full reset it is safer to clear it locally too.
       draft.apiKey = ""
@@ -742,6 +889,25 @@ final class ConsoleStore: ObservableObject {
     return errs
   }
 
+  func runValidationErrors() -> [String] {
+    var errs = validationErrors()
+
+    let key = draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let apiKeySet = status?.config.apiKeySet ?? false
+    if key.isEmpty, !apiKeySet {
+      errs.append("API Key is required")
+    }
+
+    if !isLoopbackRunnerURL {
+      let token = draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
+      if token.isEmpty {
+        errs.append("Agent token is required for LAN access")
+      }
+    }
+
+    return errs
+  }
+
   func ensureStepScreenshotLoaded(step: Int) async {
     if step < 0 {
       return
@@ -754,10 +920,10 @@ final class ConsoleStore: ObservableObject {
     defer { stepScreenshotLoading.remove(step) }
 
     do {
-      let client = try AgentClient(wdaURL: wdaURL)
+      let client = try makeClient()
       let png = try await client.getStepScreenshotPNG(step: step)
       guard gen == stateGeneration else { return }
-      guard let image = UIImage(data: png) else {
+      guard let image = PlatformImage(data: png) else {
         stepScreenshotErrors[step] = "Invalid screenshot image"
         return
       }
@@ -800,7 +966,7 @@ final class ConsoleStore: ObservableObject {
   }
 
   func exportConfigJSONForQRCode() throws -> String {
-    var req = try makeConfigRequest()
+    var req = try makeConfigRequest(requireLANToken: false)
     req.api_key = nil
 
     let sys = req.system_prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -836,7 +1002,7 @@ final class ConsoleStore: ObservableObject {
     return s
   }
 
-  private func makeConfigRequest() throws -> AgentConfigRequest {
+  private func makeConfigRequest(requireLANToken: Bool = true) throws -> AgentConfigRequest {
     let baseUrl = draft.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
     let model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
     let task = draft.task
@@ -865,11 +1031,16 @@ final class ConsoleStore: ObservableObject {
     }
 
     let key = draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let agentToken = draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    if requireLANToken, !isLoopbackRunnerURL, agentToken.isEmpty {
+      throw AgentClientError.server("Agent token is required for LAN access")
+    }
 
     return AgentConfigRequest(
       base_url: baseUrl,
       model: model,
       api_mode: apiMode,
+      agent_token: agentToken.isEmpty ? nil : agentToken,
       use_custom_system_prompt: draft.useCustomSystemPrompt,
       system_prompt: draft.systemPrompt,
       remember_api_key: draft.rememberApiKey,

@@ -30,6 +30,10 @@ enum AgentClientError: LocalizedError {
 }
 
 final class AgentClient {
+  private struct AgentTokenOnlyConfigRequest: Encodable {
+    let agent_token: String
+  }
+
   static let defaultSession: URLSession = {
     let cfg = URLSessionConfiguration.ephemeral
     cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -40,15 +44,17 @@ final class AgentClient {
   }()
 
   private let baseURL: URL
+  private let agentToken: String
   private let session: URLSession
   private let decoder: JSONDecoder
 
-  init(wdaURL: String, session: URLSession = AgentClient.defaultSession) throws {
+  init(wdaURL: String, agentToken: String = "", session: URLSession = AgentClient.defaultSession) throws {
     let trimmed = wdaURL.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let url = URL(string: trimmed), url.scheme != nil, url.host != nil else {
       throw AgentClientError.invalidWdaURL(wdaURL)
     }
     self.baseURL = url
+    self.agentToken = agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
     self.session = session
     self.decoder = JSONDecoder()
   }
@@ -61,6 +67,9 @@ final class AgentClient {
   private func request(_ method: String, _ path: String, body: Data? = nil) -> URLRequest {
     var req = URLRequest(url: endpoint(path))
     req.httpMethod = method
+    if !agentToken.isEmpty {
+      req.setValue(agentToken, forHTTPHeaderField: "X-OnDevice-Agent-Token")
+    }
     if let body {
       req.httpBody = body
       req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -101,8 +110,11 @@ final class AgentClient {
     }
   }
 
-  func getStatus() async throws -> AgentStatus {
-    try await fetch(request("GET", "/agent/status"), as: AgentStatus.self)
+  func getStatus(includeDefaultSystemPrompt: Bool = false) async throws -> AgentStatus {
+    let path = includeDefaultSystemPrompt
+      ? "/agent/status?include_default_system_prompt=1"
+      : "/agent/status"
+    return try await fetch(request("GET", path), as: AgentStatus.self)
   }
 
   func getLogs() async throws -> [String] {
@@ -128,6 +140,11 @@ final class AgentClient {
 
   func postConfig(_ cfg: AgentConfigRequest) async throws -> AgentStatus {
     let body = try JSONEncoder().encode(cfg)
+    return try await fetch(request("POST", "/agent/config", body: body), as: AgentStatus.self)
+  }
+
+  func postAgentTokenOnly(_ token: String) async throws -> AgentStatus {
+    let body = try JSONEncoder().encode(AgentTokenOnlyConfigRequest(agent_token: token))
     return try await fetch(request("POST", "/agent/config", body: body), as: AgentStatus.self)
   }
 

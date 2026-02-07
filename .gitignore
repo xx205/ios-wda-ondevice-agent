@@ -11,3 +11,7 @@
 wda_derived*
 DerivedData
 /tmp
+
+# Local notes (not tracked)
+docs/notes/plan_2026-02-05_run_readiness_and_reset.md
+docs/notes/ui_review/
