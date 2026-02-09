@@ -55,3 +55,14 @@
 
 普通 iOS App 没有跨 App UI 自动化能力；执行端必须由 WDA/XCTest 这类系统测试能力来完成。
 
+---
+
+## 开发调试补充（可选）
+
+如果你在做研发排障，而不是日常使用，可以配合仓库根目录 `tools/` 下的脚本：
+
+- `tools/wda_remote_tool.py`：直接调 `/agent/*` 接口并导出 chat/log/report
+- `tools/wda_longshot.py`：抓取并拼接长截图（适合审查 Run 页完整 UI）
+- `tools/macos_remote_tool.py`：在 macOS 本机做打开 app / 点击 / 滑动 / 截图
+
+详细用法见 `tools/README.md`。

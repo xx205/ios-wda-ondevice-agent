@@ -8,7 +8,7 @@ Usage:
 
 What it does:
   - Applies patches/webdriveragent_ondevice_agent_webui.patch to a temporary worktree of the WDA submodule
-  - Copies WebDriverAgentRunner/UITestingUITests.m into wda_overlay/WebDriverAgentRunner/UITestingUITests.m
+  - Copies key patched files into wda_overlay/ (readable mirror)
 
 Why:
   This repo treats patches/*.patch as the source of truth. The overlay is a readable mirror.
@@ -38,8 +38,15 @@ if [[ -z "$wda_dir" ]]; then
 fi
 
 patch_path="$repo_root/patches/webdriveragent_ondevice_agent_webui.patch"
-overlay_dir="$repo_root/wda_overlay/WebDriverAgentRunner"
-overlay_path="$overlay_dir/UITestingUITests.m"
+overlay_root="$repo_root/wda_overlay"
+
+files_to_copy=(
+  "WebDriverAgentRunner/UITestingUITests.m"
+  "WebDriverAgentLib/Routing/FBRouteRequest.h"
+  "WebDriverAgentLib/Routing/FBRouteRequest-Private.h"
+  "WebDriverAgentLib/Routing/FBRouteRequest.m"
+  "WebDriverAgentLib/Routing/FBWebServer.m"
+)
 
 if [[ ! -f "$patch_path" ]]; then
   echo "Patch not found: $patch_path" >&2
@@ -51,7 +58,7 @@ if [[ ! -e "$wda_dir/.git" ]]; then
   exit 2
 fi
 
-mkdir -p "$overlay_dir"
+mkdir -p "$overlay_root"
 
 tmp_worktree="$(mktemp -d)"
 cleanup() {
@@ -65,11 +72,14 @@ trap cleanup EXIT
 git -C "$wda_dir" worktree add --detach "$tmp_worktree" HEAD >/dev/null
 git -C "$tmp_worktree" apply "$patch_path"
 
-src="$tmp_worktree/WebDriverAgentRunner/UITestingUITests.m"
-if [[ ! -f "$src" ]]; then
-  echo "Patched file not found: $src" >&2
-  exit 2
-fi
-
-cp -f "$src" "$overlay_path"
-echo "Updated overlay: $overlay_path"
+for rel in "${files_to_copy[@]}"; do
+  src="$tmp_worktree/$rel"
+  dst="$overlay_root/$rel"
+  if [[ ! -f "$src" ]]; then
+    echo "Patched file not found: $src" >&2
+    exit 2
+  fi
+  mkdir -p "$(dirname "$dst")"
+  cp -f "$src" "$dst"
+  echo "Updated overlay: $dst"
+done

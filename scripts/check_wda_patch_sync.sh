@@ -8,7 +8,7 @@ Usage:
 
 What it checks:
   1) patches/webdriveragent_ondevice_agent_webui.patch applies cleanly to the pinned WebDriverAgent submodule commit
-  2) wda_overlay/WebDriverAgentRunner/UITestingUITests.m equals the result of applying the patch
+  2) wda_overlay mirrors the result of applying the patch for key files
 
 Notes:
   - This does not modify your submodule working tree. It uses a temporary git worktree.
@@ -38,7 +38,15 @@ if [[ -z "$wda_dir" ]]; then
 fi
 
 patch_path="$repo_root/patches/webdriveragent_ondevice_agent_webui.patch"
-overlay_path="$repo_root/wda_overlay/WebDriverAgentRunner/UITestingUITests.m"
+overlay_root="$repo_root/wda_overlay"
+
+files_to_check=(
+  "WebDriverAgentRunner/UITestingUITests.m"
+  "WebDriverAgentLib/Routing/FBRouteRequest.h"
+  "WebDriverAgentLib/Routing/FBRouteRequest-Private.h"
+  "WebDriverAgentLib/Routing/FBRouteRequest.m"
+  "WebDriverAgentLib/Routing/FBWebServer.m"
+)
 
 if [[ ! -f "$patch_path" ]]; then
   echo "Patch not found: $patch_path" >&2
@@ -49,10 +57,13 @@ if [[ ! -e "$wda_dir/.git" ]]; then
   echo "Tip: run 'git submodule update --init --recursive' in repo root." >&2
   exit 2
 fi
-if [[ ! -f "$overlay_path" ]]; then
-  echo "Overlay file not found: $overlay_path" >&2
-  exit 2
-fi
+for rel in "${files_to_check[@]}"; do
+  overlay_path="$overlay_root/$rel"
+  if [[ ! -f "$overlay_path" ]]; then
+    echo "Overlay file not found: $overlay_path" >&2
+    exit 2
+  fi
+done
 
 tmp_worktree="$(mktemp -d)"
 cleanup() {
@@ -68,17 +79,20 @@ git -C "$wda_dir" worktree add --detach "$tmp_worktree" HEAD >/dev/null
 git -C "$tmp_worktree" apply --check "$patch_path"
 git -C "$tmp_worktree" apply "$patch_path"
 
-patched="$tmp_worktree/WebDriverAgentRunner/UITestingUITests.m"
-if [[ ! -f "$patched" ]]; then
-  echo "Patched file not found: $patched" >&2
-  exit 2
-fi
+for rel in "${files_to_check[@]}"; do
+  overlay_path="$overlay_root/$rel"
+  patched="$tmp_worktree/$rel"
+  if [[ ! -f "$patched" ]]; then
+    echo "Patched file not found: $patched" >&2
+    exit 2
+  fi
 
-if ! diff -u "$overlay_path" "$patched" >/dev/null; then
-  echo "Mismatch: overlay != patched result" >&2
-  echo "Tip: run 'bash scripts/update_wda_overlay_from_patch.sh' to refresh overlay from patch." >&2
-  diff -u "$overlay_path" "$patched" | head -n 80 >&2
-  exit 1
-fi
+  if ! diff -u "$overlay_path" "$patched" >/dev/null; then
+    echo "Mismatch: overlay != patched result for $rel" >&2
+    echo "Tip: run 'bash scripts/update_wda_overlay_from_patch.sh' to refresh overlay from patch." >&2
+    diff -u "$overlay_path" "$patched" | head -n 80 >&2
+    exit 1
+  fi
+done
 
 echo "OK: patch applies cleanly and overlay matches patch result."

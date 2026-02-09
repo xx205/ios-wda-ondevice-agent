@@ -132,6 +132,16 @@ bash scripts/install_wda_prepared_runner.sh --device <UDID>
 
 参考：`docs/recipes/ondevice_agent_console_app.md`
 
+### 8)（开发者可选）本地调试工具
+
+仓库提供一组本地调试脚本（用于研发/回归，不是终端用户必需）：
+
+- `tools/wda_remote_tool.py`：控制 `/agent/*`、导出 chat/log、生成 HTML 报告
+- `tools/wda_longshot.py`：通过 WDA 采集并拼接长截图
+- `tools/macos_remote_tool.py`：在 macOS 本机做 app 打开/激活、点击/滑动、截图
+
+说明见：`tools/README.md`
+
 ---
 
 ## 安全提醒（务必读）

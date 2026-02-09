@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 import Security
 #if canImport(UIKit)
 import UIKit
@@ -129,6 +130,7 @@ final class ConsoleStore: ObservableObject {
   @Published var defaultSystemPromptTemplate: String = ""
   @Published var logs: [String] = []
   @Published var chatItems: [AgentChatItem] = []
+  @Published var liveProgress: LiveProgress = LiveProgress()
   @Published var stepActionAnnotations: [Int: ActionAnnotation] = [:]
   @Published var connectionError: String?
   @Published var lastActionError: String?
@@ -157,7 +159,7 @@ final class ConsoleStore: ObservableObject {
   }
 
   private var didHydrateFromDevice: Bool = false
-  private var refreshTask: Task<Void, Never>?
+  private var eventStreamTask: Task<Void, Never>?
   private var refreshInFlight: Bool = false
   private var refreshPending: Bool = false
   private var autoRefreshSuspendCount: Int = 0
@@ -165,6 +167,9 @@ final class ConsoleStore: ObservableObject {
   private var stepScreenshotLoading: Set<Int> = []
   private var localNetworkCheckInFlight: Bool = false
   private var lastLocalNetworkCheckAt: Date?
+  private var lastSeenRunning: Bool = false
+  private var networkMonitor: NWPathMonitor?
+  private var networkMonitorQueue: DispatchQueue?
 
   private static func l10n(_ key: String, _ args: CVarArg...) -> String {
     if args.isEmpty { return NSLocalizedString(key, comment: "") }
@@ -177,6 +182,42 @@ final class ConsoleStore: ObservableObject {
     var loopbackOK: Bool
     var lanOK: Bool
     var checkedAt: Date
+  }
+
+  struct LiveProgress: Equatable {
+    enum Phase: String, Equatable {
+      case idle
+      case stopping
+      case callingModel
+      case parsingOutput
+      case executingAction
+    }
+
+    struct AgentStep: Equatable {
+      var step: Int
+      var action: String
+    }
+
+    struct Tokens: Equatable {
+      struct Totals: Equatable {
+        var input: Int
+        var output: Int
+        var cached: Int
+        var total: Int
+      }
+
+      var requestIndex: Int
+      var delta: Totals
+      var cumulative: Totals
+    }
+
+    var running: Bool = false
+    var phase: Phase = .idle
+    var step: Int?
+    var attempt: Int?
+    var action: String?
+    var nextPlanItem: String?
+    var tokens: Tokens?
   }
 
   static func wifiIPv4Address() -> String? {
@@ -667,20 +708,347 @@ final class ConsoleStore: ObservableObject {
     didHydrateFromDevice = true
   }
 
-  func boot() async {
-    if refreshTask != nil {
-      return
+  private func eventStreamKey() -> String {
+    let url = wdaURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    let token = draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    return "\(url)|\(token)"
+  }
+
+  private enum EventStreamWatchdogError: Error {
+    case stalled
+  }
+
+  private var lastEventStreamLineAt: Date = .distantPast
+
+  private static func sseValue(_ line: String, prefix: String) -> String? {
+    guard line.hasPrefix(prefix) else { return nil }
+    var v = line.dropFirst(prefix.count)
+    if v.first == " " {
+      v = v.dropFirst()
     }
-    await refresh()
-    refreshTask = Task { @MainActor [weak self] in
-      while let self, !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        if self.autoRefreshSuspendCount > 0 {
-          continue
+    return String(v)
+  }
+
+  private func watchEventStreamStaleness(key: String) async throws {
+    let staleAfterSeconds: TimeInterval = 45
+    while !Task.isCancelled {
+      if eventStreamKey() != key {
+        return
+      }
+      if autoRefreshSuspendCount > 0 {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        continue
+      }
+
+      let last = lastEventStreamLineAt
+      if last != .distantPast, Date().timeIntervalSince(last) > staleAfterSeconds {
+        throw EventStreamWatchdogError.stalled
+      }
+
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+  }
+
+  private func consumeEventStreamWithWatchdog(_ bytes: URLSession.AsyncBytes, key: String) async throws {
+    lastEventStreamLineAt = Date()
+
+    var firstError: Error?
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask { [weak self] in
+        guard let self else { return }
+        try await self.consumeEventStream(bytes, key: key)
+      }
+      group.addTask { [weak self] in
+        guard let self else { return }
+        try await self.watchEventStreamStaleness(key: key)
+      }
+
+      do {
+        _ = try await group.next()
+      } catch {
+        firstError = error
+      }
+
+      group.cancelAll()
+      do {
+        try await group.waitForAll()
+      } catch {
+        if firstError == nil, !(error is CancellationError) {
+          firstError = error
         }
-        await self.refresh()
+      }
+
+      if let firstError {
+        throw firstError
       }
     }
+  }
+
+  private func runEventStreamLoop() async {
+    var backoffMs = 200
+    while !Task.isCancelled {
+      if autoRefreshSuspendCount > 0 {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        continue
+      }
+
+      let key = eventStreamKey()
+      do {
+        let client = try makeClient()
+        let includeDefaultPrompt = defaultSystemPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let bytes = try await client.openEventStream(includeDefaultSystemPrompt: includeDefaultPrompt)
+
+        backoffMs = 200
+        try await consumeEventStreamWithWatchdog(bytes, key: key)
+      } catch {
+        if Task.isCancelled {
+          return
+        }
+        if error is EventStreamWatchdogError {
+          continue
+        }
+        let msg = error.localizedDescription
+        if connectionError != msg {
+          connectionError = msg
+        }
+        if localNetworkAccess != nil {
+          localNetworkAccess = nil
+        }
+
+        let delayMs = min(backoffMs, 5000)
+        backoffMs = min(backoffMs * 2, 5000)
+        try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+      }
+    }
+  }
+
+  private func consumeEventStream(_ bytes: URLSession.AsyncBytes, key: String) async throws {
+    var currentEvent: String = ""
+    var dataLines: [String] = []
+    var didApplySnapshot = false
+
+    for try await rawLine in bytes.lines {
+      if Task.isCancelled {
+        return
+      }
+      if eventStreamKey() != key {
+        return
+      }
+      lastEventStreamLineAt = Date()
+
+      let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+
+      if line.isEmpty {
+        let event = currentEvent.isEmpty ? "message" : currentEvent
+        let data = dataLines.joined(separator: "\n")
+        currentEvent = ""
+        dataLines.removeAll(keepingCapacity: true)
+
+        if autoRefreshSuspendCount > 0 {
+          continue
+        }
+
+        if event == "snapshot" {
+          didApplySnapshot = true
+          await applyPushEvent(name: event, data: data)
+        } else if didApplySnapshot {
+          await applyPushEvent(name: event, data: data)
+        }
+        continue
+      }
+
+      if line.hasPrefix(":") {
+        continue
+      }
+      if let v = Self.sseValue(line, prefix: "event:") {
+        currentEvent = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        continue
+      }
+      if let v = Self.sseValue(line, prefix: "data:") {
+        dataLines.append(v)
+        continue
+      }
+    }
+  }
+
+  private func applyPushEvent(name: String, data: String) async {
+    if connectionError != nil {
+      connectionError = nil
+    }
+    if let err = lastActionError, !err.isEmpty, Self.isTransientNetworkErrorString(err) {
+      lastActionError = nil
+    }
+    Task { await self.checkLocalNetworkAccess(force: false) }
+
+    switch name {
+    case "ping":
+      return
+    case "snapshot":
+      await applySnapshotEvent(data)
+    case "status":
+      await applyStatusEvent(data)
+    case "log":
+      applyLogEvent(data)
+    case "chat":
+      await applyChatEvent(data)
+    default:
+      return
+    }
+  }
+
+  private func applySnapshotEvent(_ raw: String) async {
+    guard let data = raw.data(using: .utf8) else { return }
+    guard let snap = try? JSONDecoder().decode(AgentEventSnapshot.self, from: data) else { return }
+
+    let st = snap.status
+    let wasRunning = status?.running ?? false
+
+    if status != st {
+      status = st
+    }
+    if defaultSystemPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let template = st.config.defaultSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !template.isEmpty {
+        defaultSystemPromptTemplate = template
+      }
+    }
+
+    if logs != snap.logs {
+      logs = snap.logs
+    }
+    if logsError != nil {
+      logsError = nil
+    }
+
+    if chatItems != snap.chat {
+      chatItems = snap.chat
+      stepActionAnnotations = ActionAnnotation.buildMap(from: chatItems)
+      let stepsInChat = Set(chatItems.compactMap { $0.step })
+      stepScreenshots = stepScreenshots.filter { stepsInChat.contains($0.key) }
+      stepScreenshotErrors = stepScreenshotErrors.filter { stepsInChat.contains($0.key) }
+      stepScreenshotLoading = Set(stepScreenshotLoading.filter { stepsInChat.contains($0) })
+    }
+    if chatError != nil {
+      chatError = nil
+    }
+
+    if !didHydrateFromDevice {
+      hydrateFromDevice(st.config)
+      didHydrateFromDevice = true
+    }
+
+    updateDerivedState(wasRunning: wasRunning, st: st)
+  }
+
+  private func applyStatusEvent(_ raw: String) async {
+    guard let data = raw.data(using: .utf8) else { return }
+    guard let st = try? JSONDecoder().decode(AgentStatus.self, from: data) else { return }
+
+    let wasRunning = status?.running ?? false
+    if status != st {
+      status = st
+    }
+    if defaultSystemPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let template = st.config.defaultSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !template.isEmpty {
+        defaultSystemPromptTemplate = template
+      }
+    }
+
+    if !didHydrateFromDevice {
+      hydrateFromDevice(st.config)
+      didHydrateFromDevice = true
+    }
+
+    updateDerivedState(wasRunning: wasRunning, st: st)
+  }
+
+  private func applyLogEvent(_ line: String) {
+    logs.append(line)
+    while logs.count > 300 {
+      logs.removeFirst()
+    }
+    if logsError != nil {
+      logsError = nil
+    }
+    if let st = status {
+      updateDerivedState(wasRunning: st.running, st: st)
+    }
+  }
+
+  private func applyChatEvent(_ raw: String) async {
+    guard let data = raw.data(using: .utf8) else { return }
+    guard let item = try? JSONDecoder().decode(AgentChatItem.self, from: data) else { return }
+
+    chatItems.append(item)
+
+    if let lastStep = item.step {
+      let maxSteps = status?.config.maxSteps ?? 0
+      if maxSteps > 0 {
+        let minStep = max(0, lastStep - maxSteps + 1)
+        while let first = chatItems.first, let s = first.step, s >= 0, s < minStep {
+          chatItems.removeFirst()
+        }
+      }
+    }
+
+    stepActionAnnotations = ActionAnnotation.buildMap(from: chatItems)
+    let stepsInChat = Set(chatItems.compactMap { $0.step })
+    stepScreenshots = stepScreenshots.filter { stepsInChat.contains($0.key) }
+    stepScreenshotErrors = stepScreenshotErrors.filter { stepsInChat.contains($0.key) }
+    stepScreenshotLoading = Set(stepScreenshotLoading.filter { stepsInChat.contains($0) })
+
+    if chatError != nil {
+      chatError = nil
+    }
+    if let st = status {
+      updateDerivedState(wasRunning: st.running, st: st)
+    }
+  }
+
+  func boot() async {
+    if eventStreamTask != nil {
+      return
+    }
+    startNetworkMonitorIfNeeded()
+    await refresh()
+    eventStreamTask = Task { @MainActor [weak self] in
+      await self?.runEventStreamLoop()
+    }
+  }
+
+  private func startNetworkMonitorIfNeeded() {
+    #if os(iOS)
+    if networkMonitor != nil {
+      return
+    }
+
+    let monitor = NWPathMonitor()
+    let queue = DispatchQueue(label: "ondevice_agent.console.network_monitor")
+    monitor.pathUpdateHandler = { [weak self] path in
+      Task { @MainActor in
+        guard let self else { return }
+        if path.status != .satisfied || !path.usesInterfaceType(.wifi) {
+          if self.localNetworkAccess != nil {
+            self.localNetworkAccess = nil
+          }
+          return
+        }
+        await self.checkLocalNetworkAccess(force: true)
+      }
+    }
+    monitor.start(queue: queue)
+    networkMonitor = monitor
+    networkMonitorQueue = queue
+    #endif
+  }
+
+  private func stopNetworkMonitor() {
+    #if os(iOS)
+    networkMonitor?.cancel()
+    networkMonitor = nil
+    networkMonitorQueue = nil
+    #endif
   }
 
   func suspendAutoRefresh() {
@@ -689,6 +1057,11 @@ final class ConsoleStore: ObservableObject {
 
   func resumeAutoRefresh() {
     autoRefreshSuspendCount = max(0, autoRefreshSuspendCount - 1)
+    if autoRefreshSuspendCount == 0 {
+      Task { @MainActor [weak self] in
+        await self?.refresh()
+      }
+    }
   }
 
   func refresh() async {
@@ -715,49 +1088,78 @@ final class ConsoleStore: ObservableObject {
       let st = try await client.getStatus(includeDefaultSystemPrompt: needDefaultPrompt)
 
       guard gen == stateGeneration else { return }
-      status = st
+      let wasRunning = status?.running ?? false
+      if status != st {
+        status = st
+      }
       if needDefaultPrompt {
         let template = st.config.defaultSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !template.isEmpty {
           defaultSystemPromptTemplate = template
         }
       }
-      connectionError = nil
+      if connectionError != nil {
+        connectionError = nil
+      }
+      if let err = lastActionError, !err.isEmpty, Self.isTransientNetworkErrorString(err) {
+        lastActionError = nil
+      }
       Task { await self.checkLocalNetworkAccess(force: false) }
 
       do {
         let newLogs = try await client.getLogs()
         guard gen == stateGeneration else { return }
-        logs = newLogs
-        logsError = nil
+        if logs != newLogs {
+          logs = newLogs
+        }
+        if logsError != nil {
+          logsError = nil
+        }
       } catch {
         guard gen == stateGeneration else { return }
-        logsError = error.localizedDescription
+        let msg = error.localizedDescription
+        if logsError != msg {
+          logsError = msg
+        }
       }
 
       do {
         let newChat = try await client.getChat()
         guard gen == stateGeneration else { return }
-        chatItems = newChat
-        stepActionAnnotations = ActionAnnotation.buildMap(from: newChat)
-        chatError = nil
-        let stepsInChat = Set(newChat.compactMap { $0.step })
-        stepScreenshots = stepScreenshots.filter { stepsInChat.contains($0.key) }
-        stepScreenshotErrors = stepScreenshotErrors.filter { stepsInChat.contains($0.key) }
-        stepScreenshotLoading = Set(stepScreenshotLoading.filter { stepsInChat.contains($0) })
+        if chatItems != newChat {
+          chatItems = newChat
+          stepActionAnnotations = ActionAnnotation.buildMap(from: newChat)
+          let stepsInChat = Set(newChat.compactMap { $0.step })
+          stepScreenshots = stepScreenshots.filter { stepsInChat.contains($0.key) }
+          stepScreenshotErrors = stepScreenshotErrors.filter { stepsInChat.contains($0.key) }
+          stepScreenshotLoading = Set(stepScreenshotLoading.filter { stepsInChat.contains($0) })
+        }
+        if chatError != nil {
+          chatError = nil
+        }
       } catch {
         guard gen == stateGeneration else { return }
-        chatError = error.localizedDescription
+        let msg = error.localizedDescription
+        if chatError != msg {
+          chatError = msg
+        }
       }
 
       if !didHydrateFromDevice {
         hydrateFromDevice(st.config)
         didHydrateFromDevice = true
       }
+
+      updateDerivedState(wasRunning: wasRunning, st: st)
     } catch {
       guard gen == stateGeneration else { return }
-      connectionError = error.localizedDescription
-      localNetworkAccess = nil
+      let msg = error.localizedDescription
+      if connectionError != msg {
+        connectionError = msg
+      }
+      if localNetworkAccess != nil {
+        localNetworkAccess = nil
+      }
     }
   }
 
@@ -780,6 +1182,7 @@ final class ConsoleStore: ObservableObject {
     stepScreenshotErrors.removeAll()
     stepScreenshotLoading.removeAll()
     stepActionAnnotations.removeAll()
+    liveProgress = LiveProgress()
     do {
       let client = try makeClient()
       let req = try makeConfigRequest()
@@ -818,6 +1221,7 @@ final class ConsoleStore: ObservableObject {
     stepScreenshotErrors.removeAll()
     stepScreenshotLoading.removeAll()
     stepActionAnnotations.removeAll()
+    liveProgress = LiveProgress()
     do {
       let client = try makeClient()
       status = try await client.reset()
@@ -836,6 +1240,7 @@ final class ConsoleStore: ObservableObject {
     stepScreenshotErrors.removeAll()
     stepScreenshotLoading.removeAll()
     stepActionAnnotations.removeAll()
+    liveProgress = LiveProgress()
     do {
       let client = try makeClient()
       let st = try await client.factoryReset()
@@ -1082,5 +1487,237 @@ final class ConsoleStore: ObservableObject {
     }
     draft.reasoningEffort = cfg.reasoningEffort
     draft.doubaoSeedEnableSessionCache = cfg.doubaoSeedEnableSessionCache
+  }
+
+  private func updateDerivedState(wasRunning: Bool, st: AgentStatus) {
+    if wasRunning, !st.running {
+      // Keep UI state derived from latest status/logs/chat.
+    }
+
+    lastSeenRunning = st.running
+    let next = Self.computeLiveProgress(status: st, logs: logs, chatItems: chatItems)
+    if liveProgress != next {
+      liveProgress = next
+    }
+  }
+
+  private static func isTransientNetworkErrorString(_ message: String) -> Bool {
+    let raw = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    if raw.isEmpty { return false }
+    let lower = raw.lowercased()
+
+    // English keywords
+    if lower.contains("network") || lower.contains("connection") || lower.contains("offline") {
+      return true
+    }
+    if lower.contains("timed out") || lower.contains("timeout") || lower.contains("internet") {
+      return true
+    }
+
+    // Common Chinese keywords
+    if raw.contains("网络") || raw.contains("连接") || raw.contains("离线") || raw.contains("超时") || raw.contains("互联网") {
+      return true
+    }
+
+    return false
+  }
+
+  private static func computeLiveProgress(status: AgentStatus, logs: [String], chatItems: [AgentChatItem]) -> LiveProgress {
+    var out = LiveProgress()
+    out.running = status.running
+
+    if !status.running {
+      out.phase = .idle
+      return out
+    }
+
+    let lastMessage = status.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if lastMessage.contains("stopping") {
+      out.phase = .stopping
+    }
+
+    let lastAgentStep = parseLatestAgentStep(from: logs)
+    out.tokens = parseLatestTokens(from: logs)
+    out.nextPlanItem = extractNextPlanItem(from: chatItems)
+
+    let lastChat = chatItems.last(where: { $0.step != nil })
+    if let c = lastChat {
+      out.step = c.step
+      out.attempt = c.attempt
+      if out.phase != .stopping {
+        out.phase = (c.kind == "request") ? .callingModel : .parsingOutput
+      }
+    }
+
+    if let s = lastAgentStep {
+      if out.step == nil || s.step >= (out.step ?? -1) {
+        out.step = s.step
+        out.action = s.action
+        out.attempt = nil
+        if out.phase != .stopping {
+          out.phase = .executingAction
+        }
+      }
+    }
+
+    return out
+  }
+
+  private static func parseLatestAgentStep(from logs: [String]) -> LiveProgress.AgentStep? {
+    for line in logs.reversed() {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}") else { continue }
+      guard let data = trimmed.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+            let dict = obj as? [String: Any]
+      else { continue }
+
+      guard (dict["event"] as? String) == "step" else { continue }
+
+      func int(_ v: Any?) -> Int? {
+        if let i = v as? Int { return i }
+        if let n = v as? NSNumber { return n.intValue }
+        if let s = v as? String { return Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        return nil
+      }
+
+      let step = int(dict["step"]) ?? -1
+      let action = (dict["action"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if step < 0 || action.isEmpty { continue }
+      return LiveProgress.AgentStep(step: step, action: action)
+    }
+    return nil
+  }
+
+  private static func parseLatestTokens(from logs: [String]) -> LiveProgress.Tokens? {
+    for line in logs.reversed() {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}") else { continue }
+      guard let data = trimmed.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+            let dict = obj as? [String: Any]
+      else { continue }
+
+      guard (dict["event"] as? String) == "token_usage" else { continue }
+
+      func int(_ key: String) -> Int {
+        let v = dict[key]
+        if let i = v as? Int { return i }
+        if let n = v as? NSNumber { return n.intValue }
+        if let s = v as? String { return Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
+        return 0
+      }
+
+      let req = int("req")
+      if req <= 0 { continue }
+
+      return LiveProgress.Tokens(
+        requestIndex: req,
+        delta: .init(input: int("d_in"), output: int("d_out"), cached: int("d_cached"), total: int("d_total")),
+        cumulative: .init(input: int("c_in"), output: int("c_out"), cached: int("c_cached"), total: int("c_total"))
+      )
+    }
+    return nil
+  }
+
+  private static func parseIntPrefix(from text: Substring) -> Int? {
+    var j = text.startIndex
+    while j < text.endIndex, text[j].isNumber {
+      j = text.index(after: j)
+    }
+    guard j > text.startIndex else { return nil }
+    return Int(text[text.startIndex..<j])
+  }
+
+  private static func parseInt(after marker: String, in text: Substring) -> Int? {
+    guard let r = text.range(of: marker) else { return nil }
+    let after = text[r.upperBound...]
+    return parseIntPrefix(from: after)
+  }
+
+  private struct PlanChecklistItem {
+    var text: String
+    var done: Bool
+  }
+
+  private static func extractNextPlanItem(from chatItems: [AgentChatItem]) -> String? {
+    for it in chatItems.reversed() {
+      guard it.kind == "response" else { continue }
+      let content = (it.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !content.isEmpty else { continue }
+      guard let dict = parseAssistantJSONObject(from: content) else { continue }
+      guard let planObj = dict["plan"] else { continue }
+      let items = planChecklist(from: planObj)
+      if let next = items.first(where: { !$0.done }) {
+        return next.text
+      }
+    }
+    return nil
+  }
+
+  private static func parseAssistantJSONObject(from text: String) -> [String: Any]? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let dict = parseJSONDictionary(from: trimmed) {
+      return dict
+    }
+    guard let first = trimmed.firstIndex(of: "{"),
+          let last = trimmed.lastIndex(of: "}"),
+          first < last
+    else { return nil }
+    let candidate = String(trimmed[first...last])
+    return parseJSONDictionary(from: candidate)
+  }
+
+  private static func parseJSONDictionary(from text: String) -> [String: Any]? {
+    guard let data = text.data(using: .utf8) else { return nil }
+    guard let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+          let dict = obj as? [String: Any]
+    else { return nil }
+    return dict
+  }
+
+  private static func planChecklist(from obj: Any) -> [PlanChecklistItem] {
+    guard let arr = obj as? [Any] else { return [] }
+    var out: [PlanChecklistItem] = []
+    for item in arr {
+      if let s = item as? String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty {
+          out.append(PlanChecklistItem(text: t, done: false))
+        }
+        continue
+      }
+      guard let d = item as? [String: Any] else { continue }
+      var text = ""
+      if let s = d["text"] as? String {
+        text = s.trimmingCharacters(in: .whitespacesAndNewlines)
+      } else if let s = d["item"] as? String {
+        text = s.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+      guard !text.isEmpty else { continue }
+      let done = boolLike(d["done"]) ?? false
+      out.append(PlanChecklistItem(text: text, done: done))
+    }
+    if out.count > 12 {
+      return Array(out.prefix(12))
+    }
+    return out
+  }
+
+  private static func boolLike(_ obj: Any?) -> Bool? {
+    if let b = obj as? Bool { return b }
+    if let i = obj as? Int { return i != 0 }
+    if let n = obj as? NSNumber { return n.boolValue }
+    if let s = obj as? String {
+      switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+      case "true", "1", "yes", "y", "on":
+        return true
+      case "false", "0", "no", "n", "off":
+        return false
+      default:
+        return nil
+      }
+    }
+    return nil
   }
 }

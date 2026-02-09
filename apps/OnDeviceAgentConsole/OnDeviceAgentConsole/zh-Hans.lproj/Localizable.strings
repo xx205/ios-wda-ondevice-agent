@@ -5,18 +5,60 @@
 "Notes" = "备注";
 "On‑Device Agent" = "端侧智能体";
 
+"No results" = "无结果";
+"Try adjusting search or filters." = "请尝试调整搜索或筛选条件。";
+"Follow latest" = "跟随最新";
+"Jump to latest" = "跳转到最新";
+"Filters" = "筛选";
+"Tag" = "标签";
+"Level" = "级别";
+"Copy all" = "复制全部";
+"All" = "全部";
+"Agent" = "智能体";
+"Action" = "动作";
+"Tokens" = "Tokens";
+"Debug" = "调试";
+"Info" = "信息";
+"Warn" = "警告";
+"Error" = "错误";
+
+"Quick Start" = "快速开始";
+"Status" = "状态";
+"Live" = "实时";
+"Jump" = "跳转";
+"Run ended" = "运行结束";
+
+"Input" = "输入";
+"Output" = "输出";
+"Text" = "文本";
+"Content" = "内容";
+"Reasoning" = "推理";
+"Screenshot" = "截图";
+
+"Help" = "帮助";
+
 "Running" = "运行中";
 "Not running" = "未运行";
 "Stopped" = "已停止";
 "Token Usage" = "Token 用量";
 "Wi‑Fi unreachable" = "Wi‑Fi 不可达";
 "Runner is reachable on 127.0.0.1 but not on Wi‑Fi (%@). If Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner." = "Runner 在 127.0.0.1 可用，但在 Wi‑Fi（%@）不可达。\n若 Wi‑Fi 访问失败：设置 → App → WebDriverAgentRunner-Runner → 无线数据 → 选“无线局域网”或“无线局域网与蜂窝数据”，然后重开 Runner。";
-"Tip: If Runner was just installed or updated, iOS may reset Runner’s Wireless Data permission to Off.\nIf Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner." = "提示：如果 Runner 刚安装或更新，iOS 可能会把 Runner 的无线数据权限重置为关闭。\n若 Wi‑Fi 访问失败：设置 → App → WebDriverAgentRunner-Runner → 无线数据 → 选“无线局域网”或“无线局域网与蜂窝数据”，然后重开 Runner。";
 "Check again" = "重新检测";
 
 "Requests: %d" = "请求数：%d";
 "Input: %d  Output: %d" = "输入：%d  输出：%d";
 "Cached: %d  Total: %d" = "缓存：%d  总计：%d";
+
+"(empty)" = "（空）";
+
+"Idle" = "空闲";
+"Stopping…" = "正在停止…";
+"Calling model…" = "正在调用模型…";
+"Parsing output…" = "正在解析输出…";
+"Executing action…" = "正在执行动作…";
+"Next: %@" = "下一步：%@";
+"Step %d" = "第 %d 步";
+"Δ(in=%d, out=%d, cached=%d, total=%d)  cum(in=%d, out=%d, cached=%d, total=%d)" = "Δ(输入=%d, 输出=%d, 缓存=%d, 总=%d)  累计(输入=%d, 输出=%d, 缓存=%d, 总=%d)";
 
 "Runner" = "Runner";
 "Check status" = "检查状态";
@@ -63,6 +105,13 @@
 "Enter a task…" = "请输入任务…";
 "Start run" = "开始运行";
 "Stop run" = "停止运行";
+"Previous step failed" = "上一步失败";
+"Plan Checklist" = "计划清单";
+"Working Notes" = "工作记录";
+"Screen Info (JSON)" = "屏幕信息（JSON）";
+"Repair attempts (%d)" = "修复尝试（%d）";
+"Repair prompt" = "修复提示";
+"Repair output" = "修复输出";
 
 "Limits & stability" = "限制与稳定性";
 "Max Steps" = "最大步数";
@@ -145,10 +194,26 @@
 "Export readable text (.txt)" = "导出可读文本（.txt）";
 "Export raw JSONL (.jsonl)" = "导出原始 JSONL（.jsonl）";
 "Export HTML report (.html)" = "导出 HTML 报告（.html）";
+"Export ready" = "导出就绪";
+"Share" = "分享";
 "Exporting…" = "正在导出…";
 "Preparing screenshots…" = "正在准备截图…";
 "Preparing screenshots… %d/%d" = "正在准备截图… %d/%d";
 "Building HTML…" = "正在生成 HTML…";
+"Chat export" = "对话导出";
+"Exported at" = "导出时间：";
+"Messages" = "消息";
+"Request" = "请求";
+"Response" = "响应";
+"Step %d screenshot" = "第 %d 步截图";
+"Screenshot annotations" = "截图标注：";
+"enabled" = "已开启";
+"disabled" = "已关闭";
+"Input tokens: %d" = "输入 tokens：%d";
+"Output tokens: %d" = "输出 tokens：%d";
+"Cached tokens: %d" = "缓存 tokens：%d";
+"Total tokens: %d" = "总 tokens：%d";
+"Config (api_key excluded)" = "配置（不含 api_key）";
 "Retry" = "重试";
 "Loading screenshot…" = "正在加载截图…";
 "No conversation yet" = "暂无对话记录";
@@ -183,6 +248,7 @@
 
 "Camera unavailable" = "摄像头不可用";
 "Camera permission denied" = "摄像头权限被拒绝";
+"Camera scan is iOS-only. Use Import File / Import Image." = "相机扫描仅支持 iOS。请使用“导入文件/导入图片”。";
 
 "QR content is not valid UTF-8" = "二维码内容不是有效的 UTF-8";
 "Invalid JSON: %@" = "JSON 无效：%@";
