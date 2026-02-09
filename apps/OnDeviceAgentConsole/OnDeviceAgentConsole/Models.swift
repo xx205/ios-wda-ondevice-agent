@@ -72,7 +72,7 @@ private extension KeyedDecodingContainer {
   }
 }
 
-struct AgentStatus: Decodable {
+struct AgentStatus: Decodable, Equatable {
   let running: Bool
   let lastMessage: String
   let config: AgentConfig
@@ -100,7 +100,7 @@ struct AgentStatus: Decodable {
   }
 }
 
-struct TokenUsage: Decodable {
+struct TokenUsage: Decodable, Equatable {
   let requests: Int
   let inputTokens: Int
   let outputTokens: Int
@@ -133,7 +133,7 @@ struct TokenUsage: Decodable {
   }
 }
 
-struct AgentConfig: Decodable {
+struct AgentConfig: Decodable, Equatable {
   let task: String
   let baseUrl: String
   let model: String
@@ -244,7 +244,13 @@ struct AgentChatPayload: Decodable {
   let items: [AgentChatItem]
 }
 
-struct AgentChatItem: Decodable, Identifiable {
+struct AgentEventSnapshot: Decodable {
+  let status: AgentStatus
+  let logs: [String]
+  let chat: [AgentChatItem]
+}
+
+struct AgentChatItem: Decodable, Identifiable, Equatable {
   let ts: String?
   let step: Int?
   let kind: String

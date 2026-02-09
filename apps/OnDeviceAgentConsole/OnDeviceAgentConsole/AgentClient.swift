@@ -43,6 +43,15 @@ final class AgentClient {
     return URLSession(configuration: cfg)
   }()
 
+  static let eventStreamSession: URLSession = {
+    let cfg = URLSessionConfiguration.ephemeral
+    cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+    cfg.timeoutIntervalForRequest = 30
+    cfg.timeoutIntervalForResource = 60 * 60
+    cfg.waitsForConnectivity = false
+    return URLSession(configuration: cfg)
+  }()
+
   private let baseURL: URL
   private let agentToken: String
   private let session: URLSession
@@ -75,6 +84,22 @@ final class AgentClient {
       req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
     return req
+  }
+
+  func openEventStream(includeDefaultSystemPrompt: Bool = false) async throws -> URLSession.AsyncBytes {
+    let path = includeDefaultSystemPrompt ? "/agent/events?include_default_system_prompt=1" : "/agent/events"
+    var req = request("GET", path)
+    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+    req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+    let (bytes, resp) = try await AgentClient.eventStreamSession.bytes(for: req)
+    guard let http = resp as? HTTPURLResponse else {
+      throw AgentClientError.badResponse
+    }
+    if !(200..<300).contains(http.statusCode) {
+      throw AgentClientError.httpStatus(http.statusCode, "")
+    }
+    return bytes
   }
 
   private func decodeEnvelope<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {

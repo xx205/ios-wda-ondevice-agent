@@ -9,6 +9,7 @@
 #import <XCTest/XCTest.h>
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
+#import <UserNotifications/UserNotifications.h>
 #import <math.h>
 
 #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
@@ -30,6 +31,7 @@
 #import <ImageIO/ImageIO.h>
 
 #import "RouteResponse.h"
+#import "HTTPConnection.h"
 
 static NSString *const kOnDeviceAgentTaskKey = @"ONDEVICE_AGENT_TASK";
 static NSString *const kOnDeviceAgentBaseURLKey = @"ONDEVICE_AGENT_BASE_URL";
@@ -71,18 +73,351 @@ static double const kOnDeviceAgentDefaultStepDelaySeconds = 0.5;
 
 static NSInteger const kOnDeviceAgentRecoverableFailureLimit = 2;
 static NSUInteger const kOnDeviceAgentMaxLogLines = 300;
-static NSUInteger const kOnDeviceAgentMaxLogLineChars = 300;
+static NSUInteger const kOnDeviceAgentMaxLogLineChars = 2000;
 static NSInteger const kOnDeviceAgentDefaultRefreshIntervalMs = 1500;
 
 @interface OnDeviceAgentManager : NSObject
 + (instancetype)shared;
 - (NSString *)agentToken;
+- (NSDictionary *)status;
+- (NSDictionary *)statusWithDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt;
+- (NSArray<NSString *> *)logs;
+- (NSArray<NSDictionary *> *)chat;
 @end
+
+static UIWindow *gOnDeviceAgentConnectivityAlertWindow = nil;
+static NSObject<UNUserNotificationCenterDelegate> *gOnDeviceAgentNotificationDelegate = nil;
+
+@interface OnDeviceAgentNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation OnDeviceAgentNotificationDelegate
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
+{
+  (void)center;
+  (void)notification;
+  if (@available(iOS 14.0, *)) {
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
+  } else {
+    completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound);
+  }
+}
+
+@end
+
+static BOOL OnDeviceAgentIsChinesePreferredLanguage(void)
+{
+  NSString *lang = [NSLocale preferredLanguages].firstObject;
+  if (![lang isKindOfClass:NSString.class]) {
+    return NO;
+  }
+  return [lang hasPrefix:@"zh"];
+}
+
+static void OnDeviceAgentConfigureNotificationsPromptIfNeeded(void)
+{
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    if (@available(iOS 10.0, *)) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+        gOnDeviceAgentNotificationDelegate = [OnDeviceAgentNotificationDelegate new];
+        center.delegate = (id<UNUserNotificationCenterDelegate>)gOnDeviceAgentNotificationDelegate;
+
+        [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+          if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
+            return;
+          }
+          [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+                                completionHandler:^(__unused BOOL granted, NSError * _Nullable error) {
+            if (error != nil) {
+              [FBLogger log:[NSString stringWithFormat:@"[ONDEVICE] Notification auth request failed: %@", error]];
+            }
+          }];
+        }];
+      });
+    }
+  });
+}
+
+static void OnDeviceAgentScheduleRunEndedNotification(NSString *message)
+{
+  if (@available(iOS 10.0, *)) {
+    OnDeviceAgentConfigureNotificationsPromptIfNeeded();
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+      UNAuthorizationStatus s = settings.authorizationStatus;
+      BOOL allowed =
+        (s == UNAuthorizationStatusAuthorized)
+        || (s == UNAuthorizationStatusProvisional)
+        || (s == UNAuthorizationStatusEphemeral);
+      if (!allowed) {
+        return;
+      }
+
+      NSString *title = OnDeviceAgentIsChinesePreferredLanguage() ? @"运行结束" : @"Run ended";
+      NSString *body = [message isKindOfClass:NSString.class]
+        ? [message stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        : @"";
+      if (body.length == 0) {
+        body = OnDeviceAgentIsChinesePreferredLanguage() ? @"任务已结束。" : @"Run finished.";
+      }
+
+      UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+      content.title = title;
+      content.body = body;
+      content.sound = [UNNotificationSound defaultSound];
+      if (@available(iOS 15.0, *)) {
+        content.interruptionLevel = UNNotificationInterruptionLevelActive;
+      }
+
+      UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:1 repeats:NO];
+      NSString *identifier = [NSString stringWithFormat:@"ondevice_agent.run_ended.%lld", (long long)(NSDate.date.timeIntervalSince1970 * 1000)];
+      UNNotificationRequest *req = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:trigger];
+      [center addNotificationRequest:req withCompletionHandler:^(NSError * _Nullable error) {
+        if (error != nil) {
+          [FBLogger log:[NSString stringWithFormat:@"[ONDEVICE] Failed to schedule local notification: %@", error]];
+        }
+      }];
+    }];
+  }
+}
+
+static BOOL OnDeviceAgentIsLikelyLocalHost(NSString *host)
+{
+  if (![host isKindOfClass:NSString.class] || host.length == 0) {
+    return NO;
+  }
+
+  NSString *h = host.lowercaseString;
+  if ([h isEqualToString:@"localhost"] || [h isEqualToString:@"127.0.0.1"] || [h isEqualToString:@"::1"]) {
+    return YES;
+  }
+  if ([h hasSuffix:@".local"]) {
+    return YES;
+  }
+
+  // IPv4 private ranges
+  if ([h hasPrefix:@"10."] || [h hasPrefix:@"192.168."] || [h hasPrefix:@"127."]) {
+    return YES;
+  }
+  if ([h hasPrefix:@"172."]) {
+    NSArray<NSString *> *parts = [h componentsSeparatedByString:@"."];
+    if (parts.count >= 2) {
+      NSInteger secondOctet = parts[1].integerValue;
+      if (secondOctet >= 16 && secondOctet <= 31) {
+        return YES;
+      }
+    }
+  }
+
+  // IPv6 link-local/ULA prefixes (best-effort).
+  if ([h hasPrefix:@"fe80:"] || [h hasPrefix:@"fd"] || [h hasPrefix:@"fc"]) {
+    return YES;
+  }
+
+  return NO;
+}
+
+static BOOL OnDeviceAgentShouldWarnAboutNoInternetAtStartup(void)
+{
+  NSString *baseURL = [[NSUserDefaults standardUserDefaults] stringForKey:kOnDeviceAgentBaseURLKey];
+  NSString *trimmed = [baseURL isKindOfClass:NSString.class]
+    ? [baseURL stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+    : @"";
+  if (trimmed.length == 0) {
+    baseURL = kOnDeviceAgentDefaultBaseURL;
+  }
+
+  NSURLComponents *components = [NSURLComponents componentsWithString:baseURL];
+  if (components == nil) {
+    return YES;
+  }
+  if (OnDeviceAgentIsLikelyLocalHost(components.host)) {
+    // If the user points to a LAN model endpoint, "no internet" is often expected.
+    return NO;
+  }
+  return YES;
+}
+
+static UIWindow *OnDeviceAgentFindKeyWindow(void)
+{
+  UIApplication *app = UIApplication.sharedApplication;
+  if (@available(iOS 13.0, *)) {
+    for (UIScene *scene in app.connectedScenes) {
+      if (scene.activationState != UISceneActivationStateForegroundActive) {
+        continue;
+      }
+      if (![scene isKindOfClass:UIWindowScene.class]) {
+        continue;
+      }
+      for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+        if (w.isKeyWindow) {
+          return w;
+        }
+      }
+    }
+    for (UIScene *scene in app.connectedScenes) {
+      if (![scene isKindOfClass:UIWindowScene.class]) {
+        continue;
+      }
+      for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+        if (!w.hidden) {
+          return w;
+        }
+      }
+    }
+  }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  UIWindow *kw = app.keyWindow;
+#pragma clang diagnostic pop
+  if (kw != nil) {
+    return kw;
+  }
+  if (app.windows.count > 0) {
+    return app.windows.firstObject;
+  }
+  return nil;
+}
+
+static UIWindow *OnDeviceAgentEnsureAlertWindow(void)
+{
+  if (gOnDeviceAgentConnectivityAlertWindow != nil) {
+    return gOnDeviceAgentConnectivityAlertWindow;
+  }
+  if (@available(iOS 13.0, *)) {
+    UIWindowScene *scene = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+      if (![s isKindOfClass:UIWindowScene.class]) {
+        continue;
+      }
+      if (s.activationState == UISceneActivationStateForegroundActive) {
+        scene = (UIWindowScene *)s;
+        break;
+      }
+    }
+    if (scene != nil) {
+      gOnDeviceAgentConnectivityAlertWindow = [[UIWindow alloc] initWithWindowScene:scene];
+    }
+  }
+  if (gOnDeviceAgentConnectivityAlertWindow == nil) {
+    gOnDeviceAgentConnectivityAlertWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+  }
+  gOnDeviceAgentConnectivityAlertWindow.windowLevel = UIWindowLevelAlert + 1;
+  gOnDeviceAgentConnectivityAlertWindow.rootViewController = [UIViewController new];
+  [gOnDeviceAgentConnectivityAlertWindow makeKeyAndVisible];
+  return gOnDeviceAgentConnectivityAlertWindow;
+}
+
+static UIViewController *OnDeviceAgentTopViewController(void)
+{
+  UIWindow *w = OnDeviceAgentFindKeyWindow();
+  UIViewController *vc = w.rootViewController;
+  if (vc == nil) {
+    vc = OnDeviceAgentEnsureAlertWindow().rootViewController;
+  }
+  if (vc == nil) {
+    return nil;
+  }
+
+  while (vc.presentedViewController != nil) {
+    vc = vc.presentedViewController;
+  }
+  if ([vc isKindOfClass:UINavigationController.class]) {
+    UIViewController *visible = ((UINavigationController *)vc).visibleViewController;
+    if (visible != nil) {
+      vc = visible;
+    }
+  }
+  if ([vc isKindOfClass:UITabBarController.class]) {
+    UIViewController *selected = ((UITabBarController *)vc).selectedViewController;
+    if (selected != nil) {
+      vc = selected;
+    }
+  }
+  return vc;
+}
+
+static void OnDeviceAgentPresentNoInternetAlertOnce(void)
+{
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
+      void (^present)(void) = ^{
+        UIViewController *vc = OnDeviceAgentTopViewController();
+        if (vc == nil) {
+          return;
+        }
+
+        NSString *title = OnDeviceAgentIsChinesePreferredLanguage()
+          ? @"网络连接不可用"
+          : @"No Internet Connection";
+        NSString *message = OnDeviceAgentIsChinesePreferredLanguage()
+          ? @"Runner 暂时无法联网。请打开 Wi-Fi 或蜂窝网络，并在 iPhone 设置中为 Runner 开启“无线数据”，然后重新打开 Runner。"
+          : @"Runner can't reach the Internet. Turn on Wi-Fi or Cellular Data, and make sure Runner's Wireless Data is enabled in Settings. Then reopen Runner.";
+
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+
+        NSString *openSettings = OnDeviceAgentIsChinesePreferredLanguage() ? @"打开设置" : @"Open Settings";
+        NSString *dismiss = OnDeviceAgentIsChinesePreferredLanguage() ? @"稍后" : @"Not now";
+
+        __weak UIAlertController *weakAC = ac;
+        [ac addAction:[UIAlertAction actionWithTitle:dismiss style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) {
+          [weakAC dismissViewControllerAnimated:YES completion:nil];
+          if (gOnDeviceAgentConnectivityAlertWindow != nil) {
+            gOnDeviceAgentConnectivityAlertWindow.hidden = YES;
+            gOnDeviceAgentConnectivityAlertWindow.rootViewController = nil;
+            gOnDeviceAgentConnectivityAlertWindow = nil;
+          }
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:openSettings style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+          NSURL *url = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+          if (url != nil && [UIApplication.sharedApplication canOpenURL:url]) {
+            [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+          }
+          if (gOnDeviceAgentConnectivityAlertWindow != nil) {
+            gOnDeviceAgentConnectivityAlertWindow.hidden = YES;
+            gOnDeviceAgentConnectivityAlertWindow.rootViewController = nil;
+            gOnDeviceAgentConnectivityAlertWindow = nil;
+          }
+        }]];
+
+        // Avoid presenting multiple times if something else is already on screen.
+        if (vc.presentedViewController != nil) {
+          return;
+        }
+        [vc presentViewController:ac animated:YES completion:nil];
+      };
+
+      UIApplication *app = UIApplication.sharedApplication;
+      if (app.applicationState == UIApplicationStateActive) {
+        present();
+        return;
+      }
+
+      __block id token = nil;
+      token = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                               object:nil
+                                                                queue:NSOperationQueue.mainQueue
+                                                           usingBlock:^(__unused NSNotification *n) {
+        [[NSNotificationCenter defaultCenter] removeObserver:token];
+        token = nil;
+        present();
+      }];
+    });
+  });
+}
 
 static void OnDeviceAgentTriggerWirelessDataPromptIfNeeded(void)
 {
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
+    BOOL shouldWarnOnFailure = OnDeviceAgentShouldWarnAboutNoInternetAtStartup();
     NSURL *url = [NSURL URLWithString:@"https://www.apple.com/library/test/success.html"];
     if (url == nil) {
       return;
@@ -95,7 +430,13 @@ static void OnDeviceAgentTriggerWirelessDataPromptIfNeeded(void)
     cfg.waitsForConnectivity = NO;
 
     NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(__unused NSData *data, __unused NSURLResponse *resp, __unused NSError *err) {
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(__unused NSData *data, __unused NSURLResponse *resp, NSError *err) {
+      if (err != nil) {
+        [FBLogger log:[NSString stringWithFormat:@"[ONDEVICE] Connectivity probe failed: %@", err]];
+        if (shouldWarnOnFailure) {
+          OnDeviceAgentPresentNoInternetAlertOnce();
+        }
+      }
       [session finishTasksAndInvalidate];
     }];
     [task resume];
@@ -112,47 +453,87 @@ static NSData *OnDeviceAgentDownscalePNGHalf(NSData *png)
   if (src == NULL) {
     return png;
   }
-  CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, NULL);
-  CFRelease(src);
-  if (image == NULL) {
-    return png;
+  CGImageRef scaled = NULL;
+
+  // Prefer a decode-time thumbnail when available. This avoids decoding the full-resolution image
+  // into memory before downscaling, which is both faster and more memory-friendly.
+  size_t maxPixel = 0;
+  CFDictionaryRef props = CGImageSourceCopyPropertiesAtIndex(src, 0, NULL);
+  if (props != NULL) {
+    CFNumberRef wNum = (CFNumberRef)CFDictionaryGetValue(props, kCGImagePropertyPixelWidth);
+    CFNumberRef hNum = (CFNumberRef)CFDictionaryGetValue(props, kCGImagePropertyPixelHeight);
+    long long w = 0;
+    long long h = 0;
+    if (wNum != NULL && hNum != NULL && CFNumberGetValue(wNum, kCFNumberLongLongType, &w)
+        && CFNumberGetValue(hNum, kCFNumberLongLongType, &h) && w > 0 && h > 0) {
+      if (w >= 4 && h >= 4) {
+        long long m = (w > h) ? w : h;
+        maxPixel = (size_t)(m / 2);
+      }
+    }
+    CFRelease(props);
   }
 
-  size_t w = CGImageGetWidth(image);
-  size_t h = CGImageGetHeight(image);
-  if (w < 4 || h < 4) {
-    CGImageRelease(image);
-    return png;
+  if (maxPixel >= 2) {
+    CFDictionaryRef opts = (__bridge CFDictionaryRef)@{
+      (NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+      (NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
+      (NSString *)kCGImageSourceShouldCacheImmediately: @YES,
+      (NSString *)kCGImageSourceThumbnailMaxPixelSize: @(maxPixel),
+    };
+    scaled = CGImageSourceCreateThumbnailAtIndex(src, 0, opts);
   }
 
-  size_t nw = w / 2;
-  size_t nh = h / 2;
-  if (nw < 2 || nh < 2) {
-    CGImageRelease(image);
-    return png;
-  }
-
-  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-  if (cs == NULL) {
-    CGImageRelease(image);
-    return png;
-  }
-  CGContextRef ctx = CGBitmapContextCreate(NULL, nw, nh, 8, 0, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-  CGColorSpaceRelease(cs);
-  if (ctx == NULL) {
-    CGImageRelease(image);
-    return png;
-  }
-
-  CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
-  CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)nw, (CGFloat)nh), image);
-  CGImageRelease(image);
-
-  CGImageRef scaled = CGBitmapContextCreateImage(ctx);
-  CGContextRelease(ctx);
   if (scaled == NULL) {
-    return png;
+    // Fallback: full decode + downscale via CoreGraphics.
+    CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, NULL);
+    if (image == NULL) {
+      CFRelease(src);
+      return png;
+    }
+
+    size_t w = CGImageGetWidth(image);
+    size_t h = CGImageGetHeight(image);
+    if (w < 4 || h < 4) {
+      CGImageRelease(image);
+      CFRelease(src);
+      return png;
+    }
+
+    size_t nw = w / 2;
+    size_t nh = h / 2;
+    if (nw < 2 || nh < 2) {
+      CGImageRelease(image);
+      CFRelease(src);
+      return png;
+    }
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (cs == NULL) {
+      CGImageRelease(image);
+      CFRelease(src);
+      return png;
+    }
+    CGContextRef ctx = CGBitmapContextCreate(NULL, nw, nh, 8, 0, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (ctx == NULL) {
+      CGImageRelease(image);
+      CFRelease(src);
+      return png;
+    }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)nw, (CGFloat)nh), image);
+    CGImageRelease(image);
+
+    scaled = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (scaled == NULL) {
+      CFRelease(src);
+      return png;
+    }
   }
+  CFRelease(src);
 
   CFMutableDataRef outData = CFDataCreateMutable(kCFAllocatorDefault, 0);
   if (outData == NULL) {
@@ -928,6 +1309,66 @@ static NSString *OnDeviceAgentNowString(void)
   return [f stringFromDate:[NSDate date]] ?: @"";
 }
 
+static id OnDeviceAgentLogCoerceJSONValue(id v);
+
+static NSDictionary *OnDeviceAgentLogCoerceJSONDict(NSDictionary *fields)
+{
+  if (![fields isKindOfClass:NSDictionary.class]) {
+    return @{};
+  }
+  NSMutableDictionary *out = [NSMutableDictionary dictionary];
+  for (id kObj in fields) {
+    NSString *k = [kObj isKindOfClass:NSString.class] ? (NSString *)kObj : [[kObj description] ?: @"" copy];
+    k = OnDeviceAgentTrim(k ?: @"");
+    if (k.length == 0) {
+      continue;
+    }
+    out[k] = OnDeviceAgentLogCoerceJSONValue(fields[kObj]);
+  }
+  return out.copy;
+}
+
+static id OnDeviceAgentLogCoerceJSONValue(id v)
+{
+  if (v == nil) {
+    return [NSNull null];
+  }
+  if ([v isKindOfClass:NSString.class]) {
+    return OnDeviceAgentTruncate((NSString *)v, kOnDeviceAgentMaxLogLineChars);
+  }
+  if ([v isKindOfClass:NSNumber.class] || [v isKindOfClass:NSNull.class]) {
+    return v;
+  }
+  if ([v isKindOfClass:NSDictionary.class]) {
+    return OnDeviceAgentLogCoerceJSONDict((NSDictionary *)v);
+  }
+  if ([v isKindOfClass:NSArray.class]) {
+    NSMutableArray *arr = [NSMutableArray array];
+    for (id item in (NSArray *)v) {
+      [arr addObject:OnDeviceAgentLogCoerceJSONValue(item)];
+    }
+    return arr.copy;
+  }
+  return OnDeviceAgentTruncate([v description] ?: @"", kOnDeviceAgentMaxLogLineChars);
+}
+
+static NSString *OnDeviceAgentLogJSONLine(NSString *level, NSString *tag, NSString *event, NSString *message, NSDictionary *fields)
+{
+  NSMutableDictionary *d = [NSMutableDictionary dictionary];
+  d[@"ts"] = OnDeviceAgentNowString();
+  d[@"lvl"] = OnDeviceAgentTrim(level ?: @"info");
+  d[@"tag"] = OnDeviceAgentTrim(tag ?: @"agent");
+  d[@"event"] = OnDeviceAgentTrim(event ?: @"message");
+  if ([message isKindOfClass:NSString.class]) {
+    NSString *msg = OnDeviceAgentTrim(message);
+    if (msg.length > 0) {
+      d[@"msg"] = OnDeviceAgentTruncate(msg, kOnDeviceAgentMaxLogLineChars);
+    }
+  }
+  [d addEntriesFromDictionary:OnDeviceAgentLogCoerceJSONDict(fields)];
+  return OnDeviceAgentJSONStringFromObject(d) ?: @"";
+}
+
 static NSString *OnDeviceAgentFormattedDateZH(void)
 {
   NSDate *date = [NSDate date];
@@ -1531,6 +1972,263 @@ static BOOL OnDeviceAgentKeychainDelete(NSString *service, NSString *account)
 
 @end
 
+// MARK: - SSE (Console push updates)
+
+@interface OnDeviceAgentEventStreamResponse : NSObject <HTTPResponse>
+- (instancetype)initWithConnection:(HTTPConnection *)connection;
+- (void)sendEvent:(NSString *)event data:(NSString *)data;
+@end
+
+@interface OnDeviceAgentEventHub : NSObject
++ (instancetype)shared;
+- (void)addClient:(OnDeviceAgentEventStreamResponse *)client;
+- (void)removeClient:(OnDeviceAgentEventStreamResponse *)client;
+- (void)broadcastEvent:(NSString *)event data:(NSString *)data;
+- (void)broadcastJSONObject:(id)obj event:(NSString *)event;
+@end
+
+@implementation OnDeviceAgentEventStreamResponse {
+  __weak HTTPConnection *_connection;
+  dispatch_queue_t _queue;
+  NSMutableData *_buffer;
+  BOOL _done;
+  UInt64 _offset;
+}
+
+- (instancetype)initWithConnection:(HTTPConnection *)connection
+{
+  self = [super init];
+  if (self) {
+    _connection = connection;
+    _queue = dispatch_queue_create("ondevice_agent.sse.client", DISPATCH_QUEUE_SERIAL);
+    _buffer = [NSMutableData data];
+    _done = NO;
+    _offset = 0;
+  }
+  return self;
+}
+
+- (UInt64)contentLength
+{
+  return 0;
+}
+
+- (UInt64)offset
+{
+  return _offset;
+}
+
+- (void)setOffset:(UInt64)offset
+{
+  _offset = offset;
+}
+
+- (NSData *)readDataOfLength:(NSUInteger)length
+{
+  __block NSData *out = nil;
+  dispatch_sync(_queue, ^{
+    if (_buffer.length == 0) {
+      out = nil;
+      return;
+    }
+    NSUInteger n = MIN(length, _buffer.length);
+    out = [_buffer subdataWithRange:NSMakeRange(0, n)];
+    [_buffer replaceBytesInRange:NSMakeRange(0, n) withBytes:NULL length:0];
+  });
+  return out;
+}
+
+- (BOOL)isDone
+{
+  return _done;
+}
+
+- (BOOL)isChunked
+{
+  return YES;
+}
+
+- (void)connectionDidClose
+{
+  _done = YES;
+  _connection = nil;
+  [[OnDeviceAgentEventHub shared] removeClient:self];
+}
+
+- (void)enqueueData:(NSData *)data
+{
+  if (data.length == 0 || _done) {
+    return;
+  }
+  dispatch_async(_queue, ^{
+    if (self->_done) {
+      return;
+    }
+    [self->_buffer appendData:data];
+    HTTPConnection *c = self->_connection;
+    if (c != nil) {
+      [c responseHasAvailableData:self];
+    }
+  });
+}
+
+- (void)sendEvent:(NSString *)event data:(NSString *)data
+{
+  NSString *e = OnDeviceAgentTrim(event ?: @"");
+  if (e.length == 0) {
+    e = @"message";
+  }
+  NSString *payload = data ?: @"";
+  NSMutableString *s = [NSMutableString string];
+  [s appendFormat:@"event: %@\n", e];
+  for (NSString *line in [payload componentsSeparatedByString:@"\n"]) {
+    [s appendFormat:@"data: %@\n", line ?: @""];
+  }
+  [s appendString:@"\n"];
+  NSData *bytes = [s dataUsingEncoding:NSUTF8StringEncoding];
+  [self enqueueData:bytes ?: [NSData data]];
+}
+
+@end
+
+@implementation OnDeviceAgentEventHub {
+  dispatch_queue_t _queue;
+  NSHashTable<OnDeviceAgentEventStreamResponse *> *_clients;
+  dispatch_source_t _pingTimer;
+}
+
++ (instancetype)shared
+{
+  static OnDeviceAgentEventHub *inst = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    inst = [OnDeviceAgentEventHub new];
+  });
+  return inst;
+}
+
+- (instancetype)init
+{
+  self = [super init];
+  if (self) {
+    _queue = dispatch_queue_create("ondevice_agent.sse.hub", DISPATCH_QUEUE_SERIAL);
+    _clients = [NSHashTable weakObjectsHashTable];
+    _pingTimer = nil;
+  }
+  return self;
+}
+
+- (void)ensurePingTimerLocked
+{
+  if (_pingTimer != nil) {
+    return;
+  }
+  _pingTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
+  dispatch_source_set_timer(_pingTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), (uint64_t)(15 * NSEC_PER_SEC), (uint64_t)(1 * NSEC_PER_SEC));
+  __weak __typeof(self) weakSelf = self;
+  dispatch_source_set_event_handler(_pingTimer, ^{
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (strongSelf == nil) {
+      return;
+    }
+    [strongSelf broadcastEvent:@"ping" data:OnDeviceAgentNowString()];
+  });
+  dispatch_resume(_pingTimer);
+}
+
+- (void)teardownPingTimerLockedIfUnused
+{
+  if (_pingTimer == nil) {
+    return;
+  }
+  if (_clients.allObjects.count > 0) {
+    return;
+  }
+  dispatch_source_cancel(_pingTimer);
+  _pingTimer = nil;
+}
+
+- (void)addClient:(OnDeviceAgentEventStreamResponse *)client
+{
+  if (client == nil) {
+    return;
+  }
+  dispatch_async(_queue, ^{
+    [self->_clients addObject:client];
+    [self ensurePingTimerLocked];
+  });
+}
+
+- (void)removeClient:(OnDeviceAgentEventStreamResponse *)client
+{
+  if (client == nil) {
+    return;
+  }
+  dispatch_async(_queue, ^{
+    [self->_clients removeObject:client];
+    [self teardownPingTimerLockedIfUnused];
+  });
+}
+
+- (void)broadcastEvent:(NSString *)event data:(NSString *)data
+{
+  NSString *e = OnDeviceAgentTrim(event ?: @"");
+  NSString *d = data ?: @"";
+  if (e.length == 0) {
+    return;
+  }
+  dispatch_async(_queue, ^{
+    for (OnDeviceAgentEventStreamResponse *c in self->_clients.allObjects) {
+      [c sendEvent:e data:d];
+    }
+  });
+}
+
+- (void)broadcastJSONObject:(id)obj event:(NSString *)event
+{
+  NSString *json = OnDeviceAgentJSONStringFromObject(obj);
+  [self broadcastEvent:event data:json];
+}
+
+@end
+
+@interface OnDeviceAgentEventStreamPayload : NSObject <FBResponsePayload>
+@property (nonatomic, assign) BOOL includeDefaultSystemPrompt;
+- (instancetype)initWithIncludeDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt;
+@end
+
+@implementation OnDeviceAgentEventStreamPayload
+
+- (instancetype)initWithIncludeDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt
+{
+  self = [super init];
+  if (self) {
+    _includeDefaultSystemPrompt = includeDefaultSystemPrompt;
+  }
+  return self;
+}
+
+- (void)dispatchWithResponse:(RouteResponse *)response
+{
+  OnDeviceAgentEventStreamResponse *stream = [[OnDeviceAgentEventStreamResponse alloc] initWithConnection:response.connection];
+  [[OnDeviceAgentEventHub shared] addClient:stream];
+
+  [response setHeader:@"Content-Type" value:@"text/event-stream;charset=UTF-8"];
+  [response setHeader:@"Cache-Control" value:@"no-cache"];
+  [response setHeader:@"X-Accel-Buffering" value:@"no"];
+  [response setStatusCode:kHTTPStatusCodeOK];
+  response.response = stream;
+
+  NSDictionary *snapshot = @{
+    @"status": [[OnDeviceAgentManager shared] statusWithDefaultSystemPrompt:self.includeDefaultSystemPrompt],
+    @"logs": [[OnDeviceAgentManager shared] logs],
+    @"chat": [[OnDeviceAgentManager shared] chat],
+  };
+  [stream sendEvent:@"snapshot" data:OnDeviceAgentJSONStringFromObject(snapshot)];
+}
+
+@end
+
 static NSString *OnDeviceAgentHeaderValueCaseInsensitive(FBRouteRequest *request, NSString *fieldName)
 {
   NSDictionary *headers = [request.headers isKindOfClass:NSDictionary.class] ? request.headers : @{};
@@ -1584,11 +2282,30 @@ static BOOL OnDeviceAgentIsLoopbackHost(NSString *host)
 
 static BOOL OnDeviceAgentIsLocalhostRequest(FBRouteRequest *request)
 {
-  NSString *clientHost = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.clientHost));
-  if (clientHost.length == 0) {
+  NSString *hostHeader = OnDeviceAgentHeaderValueCaseInsensitive(request, @"Host");
+  NSString *h = OnDeviceAgentTrim(hostHeader);
+  if (h.length == 0) {
     return NO;
   }
-  return OnDeviceAgentIsLoopbackHost(clientHost);
+
+  // Strip port if present. Host header can be:
+  // - "127.0.0.1:8100"
+  // - "localhost:8100"
+  // - "[::1]:8100"
+  // - "::1"
+  if ([h hasPrefix:@"["]) {
+    NSRange end = [h rangeOfString:@"]"];
+    if (end.location != NSNotFound && end.location > 1) {
+      h = [h substringWithRange:NSMakeRange(1, end.location - 1)];
+    }
+  } else {
+    NSRange colon = [h rangeOfString:@":"];
+    if (colon.location != NSNotFound && colon.location > 0) {
+      h = [h substringToIndex:colon.location];
+    }
+  }
+
+  return OnDeviceAgentIsLoopbackHost(h);
 }
 
 static NSString *OnDeviceAgentQueryValueCaseInsensitive(NSURL *url, NSString *name)
@@ -1794,9 +2511,17 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 
 - (void)emit:(NSString *)line
 {
-  if (self.log) {
-    self.log([NSString stringWithFormat:@"%@ %@", OnDeviceAgentNowString(), line ?: @""]);
+  if (!self.log) {
+    return;
   }
+  NSString *l = line ?: @"";
+  NSString *trimmed = OnDeviceAgentTrim(l);
+  if ([trimmed hasPrefix:@"{"] && [trimmed hasSuffix:@"}"] && [trimmed rangeOfString:@"\"ts\""].location != NSNotFound) {
+    self.log(trimmed);
+    return;
+  }
+  // Wrap non-JSON log strings to keep a single, parseable log format.
+  self.log(OnDeviceAgentLogJSONLine(@"info", @"agent", @"legacy", trimmed, nil));
 }
 
 - (void)emitChat:(NSDictionary *)item
@@ -2576,11 +3301,8 @@ static long long OnDeviceAgentLL(id v)
   if ([actionName isEqualToString:@"note"]) {
     NSString *msg = OnDeviceAgentStringOrEmpty(params[@"message"]);
     self.workingNote = msg;
-    if (msg.length > 0) {
-      [self emit:[NSString stringWithFormat:@"[AGENT] Note: %@", OnDeviceAgentTruncate(msg, 800)]];
-    } else {
-      [self emit:@"[AGENT] Note"];
-    }
+    NSString *note = msg.length > 0 ? OnDeviceAgentTruncate(msg, 800) : @"";
+    [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"note", nil, @{@"note": note})];
     return YES;
   }
 
@@ -2623,7 +3345,7 @@ static long long OnDeviceAgentLL(id v)
           innerErr = [NSError errorWithDomain:@"OnDeviceAgent" code:9 userInfo:ui.copy];
           return;
         }
-        [self emit:[NSString stringWithFormat:@"[AGENT] launch app=%@ bundleId=%@", appName ?: @"", bundleId]];
+        [self emit:OnDeviceAgentLogJSONLine(@"info", @"action", @"launch_app", nil, @{@"app": appName ?: @"", @"bundle_id": bundleId ?: @""})];
         XCUIApplication *app = [[XCUIApplication alloc] initWithBundleIdentifier:bundleId];
         if (app.state == XCUIApplicationStateNotRunning) {
           [app launch];
@@ -2740,15 +3462,15 @@ static long long OnDeviceAgentLL(id v)
         if (useW3CSwipe) {
           NSError *w3cErr = nil;
           NSArray *w3c = OnDeviceAgentBuildW3CSwipeActions(active, sx, sy, ex, ey, durationMs, holdMs);
-          if (w3c) {
-            if ([active fb_performW3CActions:w3c elementCache:nil error:&w3cErr]) {
-              return;
-            }
-            [self emit:[NSString stringWithFormat:@"[AGENT] swipe(w3c) failed: %@", w3cErr.localizedDescription ?: @"unknown"]];
-          } else {
-            [self emit:@"[AGENT] swipe(w3c) skipped: invalid viewport size"];
-          }
-        }
+	          if (w3c) {
+	            if ([active fb_performW3CActions:w3c elementCache:nil error:&w3cErr]) {
+	              return;
+	            }
+	            [self emit:OnDeviceAgentLogJSONLine(@"warn", @"action", @"swipe_w3c_failed", nil, @{@"error": w3cErr.localizedDescription ?: @"unknown"})];
+	          } else {
+	            [self emit:OnDeviceAgentLogJSONLine(@"info", @"action", @"swipe_w3c_skipped", nil, @{@"reason": @"invalid_viewport_size"})];
+	          }
+	        }
 
         // Fallback: XCUITest drag. Note this is "press then drag" semantics, not a true flick.
         double pressSeconds = OnDeviceAgentParseDouble(params[@"press_seconds"], 0.0);
@@ -2796,8 +3518,12 @@ static long long OnDeviceAgentLL(id v)
   }
   BOOL useResponses = [apiMode isEqualToString:kOnDeviceAgentApiModeResponses];
 
-  [self emit:[NSString stringWithFormat:@"[AGENT] Starting (maxSteps=%ld)", (long)maxSteps]];
-  [self emit:[NSString stringWithFormat:@"[AGENT] Task: %@", task]];
+  [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"starting", nil, @{
+    @"max_steps": @(maxSteps),
+    @"step_delay_seconds": @(stepDelay),
+    @"api_mode": apiMode ?: @"",
+  })];
+  [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"task", nil, @{@"task": task ?: @""})];
 
   [self.context removeAllObjects];
   self.previousResponseId = @"";
@@ -2820,7 +3546,7 @@ static long long OnDeviceAgentLL(id v)
 
   for (NSInteger step = 0; step < maxSteps; step++) {
     if (self.stopRequested) {
-      [self emit:@"[AGENT] Stop requested."];
+      [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
       if (self.finish) {
         self.finish(NO, @"Stopped");
       }
@@ -2829,7 +3555,7 @@ static long long OnDeviceAgentLL(id v)
 
     NSData *png = [self takeScreenshotPNG];
     if (png.length == 0) {
-      [self emit:@"[AGENT] Failed to capture screenshot."];
+      [self emit:OnDeviceAgentLogJSONLine(@"error", @"agent", @"screenshot_failed", nil, nil)];
       if (self.finish) {
         self.finish(NO, @"Failed to capture screenshot");
       }
@@ -2930,13 +3656,13 @@ static long long OnDeviceAgentLL(id v)
         }
       if (resp == nil) {
         if (self.stopRequested) {
-          [self emit:@"[AGENT] Stop requested."];
+          [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
           if (self.finish) {
             self.finish(NO, @"Stopped");
           }
           return;
         }
-        [self emit:[NSString stringWithFormat:@"[AGENT] LLM call failed: %@", callErr.localizedDescription ?: callErr]];
+        [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"llm_call_failed", nil, @{@"error": callErr.localizedDescription ?: callErr ?: @"unknown"})];
         if (self.finish) {
           self.finish(NO, callErr.localizedDescription ?: @"LLM call failed");
       }
@@ -2948,23 +3674,23 @@ static long long OnDeviceAgentLL(id v)
     NSDictionary *deltaUsage = [self accumulateTokenUsageFromResponse:resp];
     if (deltaUsage.count > 0) {
       NSDictionary *tot = [self tokenUsageSnapshot];
-      [self emit:[NSString stringWithFormat:
-        @"[TOKENS] req=%@ (+in=%@, +out=%@, +cached=%@, +total=%@) cum(in=%@, out=%@, cached=%@, total=%@)",
-        tot[@"requests"] ?: @0,
-        deltaUsage[@"input_tokens"] ?: @0,
-        deltaUsage[@"output_tokens"] ?: @0,
-        deltaUsage[@"cached_tokens"] ?: @0,
-        deltaUsage[@"total_tokens"] ?: @0,
-        tot[@"input_tokens"] ?: @0,
-        tot[@"output_tokens"] ?: @0,
-        tot[@"cached_tokens"] ?: @0,
-        tot[@"total_tokens"] ?: @0]];
+      [self emit:OnDeviceAgentLogJSONLine(@"info", @"tokens", @"token_usage", nil, @{
+        @"req": tot[@"requests"] ?: @0,
+        @"d_in": deltaUsage[@"input_tokens"] ?: @0,
+        @"d_out": deltaUsage[@"output_tokens"] ?: @0,
+        @"d_cached": deltaUsage[@"cached_tokens"] ?: @0,
+        @"d_total": deltaUsage[@"total_tokens"] ?: @0,
+        @"c_in": tot[@"input_tokens"] ?: @0,
+        @"c_out": tot[@"output_tokens"] ?: @0,
+        @"c_cached": tot[@"cached_tokens"] ?: @0,
+        @"c_total": tot[@"total_tokens"] ?: @0,
+      })];
     }
     if (useResponses) {
       NSString *rid = [resp[@"id"] isKindOfClass:NSString.class] ? (NSString *)resp[@"id"] : @"";
       rid = OnDeviceAgentTrim(rid);
       if (rid.length == 0) {
-        [self emit:@"[AGENT] Responses API returned no 'id' (cannot continue statefully)."];
+        [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"responses_missing_id", nil, nil)];
         if (self.finish) {
           self.finish(NO, @"Responses API returned no 'id' (cannot continue statefully).");
         }
@@ -2989,7 +3715,7 @@ static long long OnDeviceAgentLL(id v)
 
     NSString *content = assistantContent;
     if (content.length == 0) {
-      [self emit:@"[AGENT] Empty model content."];
+      [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"empty_model_content", nil, nil)];
       if (self.finish) {
         self.finish(NO, @"Empty model content");
       }
@@ -3009,7 +3735,11 @@ static long long OnDeviceAgentLL(id v)
       }
 
       NSString *errMsg = parseErr.localizedDescription ?: @"Unknown parse error";
-      [self emit:[NSString stringWithFormat:@"[AGENT] Cannot parse action (attempt %ld/%ld): %@", (long)(attempt + 1), (long)(maxActionRetries + 1), errMsg]];
+      [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"parse_action_failed", nil, @{
+        @"attempt": @(attempt + 1),
+        @"attempt_max": @(maxActionRetries + 1),
+        @"error": errMsg ?: @"",
+      })];
 
       if (attempt >= maxActionRetries) {
         break;
@@ -3064,13 +3794,16 @@ static long long OnDeviceAgentLL(id v)
           }
       if (fixResp == nil) {
         if (self.stopRequested) {
-          [self emit:@"[AGENT] Stop requested."];
+          [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
           if (self.finish) {
             self.finish(NO, @"Stopped");
           }
           return;
         }
-        [self emit:[NSString stringWithFormat:@"[AGENT] LLM fix call failed: %@", fixCallErr.localizedDescription ?: fixCallErr]];
+        [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"llm_fix_call_failed", nil, @{
+          @"attempt": @(attempt + 1),
+          @"error": fixCallErr.localizedDescription ?: fixCallErr ?: @"unknown",
+        })];
         if (self.finish) {
           self.finish(NO, fixCallErr.localizedDescription ?: @"LLM fix call failed");
         }
@@ -3082,23 +3815,23 @@ static long long OnDeviceAgentLL(id v)
       NSDictionary *fixDeltaUsage = [self accumulateTokenUsageFromResponse:fixResp];
       if (fixDeltaUsage.count > 0) {
         NSDictionary *tot = [self tokenUsageSnapshot];
-        [self emit:[NSString stringWithFormat:
-          @"[TOKENS] req=%@ (+in=%@, +out=%@, +cached=%@, +total=%@) cum(in=%@, out=%@, cached=%@, total=%@)",
-          tot[@"requests"] ?: @0,
-          fixDeltaUsage[@"input_tokens"] ?: @0,
-          fixDeltaUsage[@"output_tokens"] ?: @0,
-          fixDeltaUsage[@"cached_tokens"] ?: @0,
-          fixDeltaUsage[@"total_tokens"] ?: @0,
-          tot[@"input_tokens"] ?: @0,
-          tot[@"output_tokens"] ?: @0,
-          tot[@"cached_tokens"] ?: @0,
-          tot[@"total_tokens"] ?: @0]];
+        [self emit:OnDeviceAgentLogJSONLine(@"info", @"tokens", @"token_usage", nil, @{
+          @"req": tot[@"requests"] ?: @0,
+          @"d_in": fixDeltaUsage[@"input_tokens"] ?: @0,
+          @"d_out": fixDeltaUsage[@"output_tokens"] ?: @0,
+          @"d_cached": fixDeltaUsage[@"cached_tokens"] ?: @0,
+          @"d_total": fixDeltaUsage[@"total_tokens"] ?: @0,
+          @"c_in": tot[@"input_tokens"] ?: @0,
+          @"c_out": tot[@"output_tokens"] ?: @0,
+          @"c_cached": tot[@"cached_tokens"] ?: @0,
+          @"c_total": tot[@"total_tokens"] ?: @0,
+        })];
       }
       if (useResponses) {
         NSString *rid = [fixResp[@"id"] isKindOfClass:NSString.class] ? (NSString *)fixResp[@"id"] : @"";
         rid = OnDeviceAgentTrim(rid);
         if (rid.length == 0) {
-          [self emit:@"[AGENT] Responses API returned no 'id' for fix call (cannot continue statefully)."];
+          [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"responses_missing_id_fix", nil, nil)];
           if (self.finish) {
             self.finish(NO, @"Responses API returned no 'id' for fix call (cannot continue statefully).");
           }
@@ -3123,7 +3856,7 @@ static long long OnDeviceAgentLL(id v)
         }
 
       if (fixContent.length == 0) {
-        [self emit:@"[AGENT] Empty model content for fix attempt."];
+        [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"empty_fix_content", nil, @{@"attempt": @(attempt + 1)})];
         break;
       }
       contentForParse = fixContent;
@@ -3131,7 +3864,7 @@ static long long OnDeviceAgentLL(id v)
 
     if (action == nil) {
       NSString *stopMsg = [NSString stringWithFormat:@"模型输出的 action JSON 格式错误，已连续 %ld 次无法解析。为避免误操作，已停止任务。", (long)(maxActionRetries + 1)];
-      [self emit:[NSString stringWithFormat:@"[AGENT] %@", stopMsg]];
+      [self emit:OnDeviceAgentLogJSONLine(@"error", @"agent", @"stop_parse_action_failed", stopMsg, @{@"attempt_max": @(maxActionRetries + 1)})];
       if (self.finish) {
         self.finish(NO, stopMsg);
       }
@@ -3145,12 +3878,16 @@ static long long OnDeviceAgentLL(id v)
 
     NSDictionary *actionObj = [action[@"action"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)action[@"action"] : nil;
     NSString *actionName = [actionObj[@"name"] isKindOfClass:NSString.class] ? OnDeviceAgentNormalizeActionName((NSString *)actionObj[@"name"]) : @"";
-    [self emit:[NSString stringWithFormat:@"[AGENT] Step %ld action=%@ payload=%@", (long)step, actionName, OnDeviceAgentJSONStringFromObject(OnDeviceAgentActionForLogs(action))]];
+    [self emit:OnDeviceAgentLogJSONLine(@"info", @"action", @"step", nil, @{
+      @"step": @(step),
+      @"action": actionName ?: @"",
+      @"payload": OnDeviceAgentActionForLogs(action) ?: @{},
+    })];
 
     if ([actionName isEqualToString:@"finish"]) {
       NSDictionary *params = [actionObj[@"params"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)actionObj[@"params"] : @{};
       NSString *msg = OnDeviceAgentStringOrEmpty(params[@"message"]);
-      [self emit:[NSString stringWithFormat:@"[AGENT] Finished: %@", msg]];
+      [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"finished", nil, @{@"message": msg ?: @""})];
       if (self.finish) {
         self.finish(YES, msg.length > 0 ? msg : @"Finished");
       }
@@ -3163,7 +3900,7 @@ static long long OnDeviceAgentLL(id v)
       NSString *kind = [actErr.userInfo[kOnDeviceAgentErrorKindKey] isKindOfClass:NSString.class] ? (NSString *)actErr.userInfo[kOnDeviceAgentErrorKindKey] : @"";
       BOOL recoverable = [kind isEqualToString:kOnDeviceAgentErrorKindLaunchNotInMap] || [kind isEqualToString:kOnDeviceAgentErrorKindInvalidParams];
       if (!recoverable) {
-        [self emit:[NSString stringWithFormat:@"[AGENT] Action failed: %@", failMsg]];
+        [self emit:OnDeviceAgentLogJSONLine(@"error", @"action", @"action_failed", nil, @{@"error": failMsg ?: @"", @"kind": kind ?: @""})];
         if (self.finish) {
           self.finish(NO, failMsg);
         }
@@ -3172,7 +3909,12 @@ static long long OnDeviceAgentLL(id v)
 
       consecutiveRecoverableFailures += 1;
       lastRecoverableFailureText = OnDeviceAgentExplainRecoverableActionError(kind, action, actErr);
-      [self emit:[NSString stringWithFormat:@"[AGENT] Recoverable action failed (%@) (%ld/%ld): %@", kind, (long)consecutiveRecoverableFailures, (long)kOnDeviceAgentRecoverableFailureLimit, OnDeviceAgentTruncate(lastRecoverableFailureText, kOnDeviceAgentMaxLogLineChars)]];
+      [self emit:OnDeviceAgentLogJSONLine(@"warn", @"action", @"action_failed_recoverable", nil, @{
+        @"kind": kind ?: @"",
+        @"count": @(consecutiveRecoverableFailures),
+        @"limit": @(kOnDeviceAgentRecoverableFailureLimit),
+        @"explain": OnDeviceAgentTruncate(lastRecoverableFailureText, kOnDeviceAgentMaxLogLineChars),
+      })];
 
       // Keep assistant history aligned even when the action fails.
       if (!useResponses) {
@@ -3181,7 +3923,10 @@ static long long OnDeviceAgentLL(id v)
 
       if (consecutiveRecoverableFailures >= kOnDeviceAgentRecoverableFailureLimit) {
         NSString *stopMsg = [NSString stringWithFormat:@"动作执行失败已连续 %ld 次。为避免误操作，已停止任务。", (long)consecutiveRecoverableFailures];
-        [self emit:[NSString stringWithFormat:@"[AGENT] %@", stopMsg]];
+        [self emit:OnDeviceAgentLogJSONLine(@"error", @"agent", @"stop_recoverable_failures", stopMsg, @{
+          @"count": @(consecutiveRecoverableFailures),
+          @"limit": @(kOnDeviceAgentRecoverableFailureLimit),
+        })];
         if (self.finish) {
           self.finish(NO, stopMsg);
         }
@@ -3207,7 +3952,7 @@ static long long OnDeviceAgentLL(id v)
   }
 
   if (self.finish) {
-    [self emit:@"[AGENT] Max steps reached."];
+    [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"max_steps_reached", nil, @{@"max_steps": @(maxSteps)})];
     self.finish(NO, @"Max steps reached");
   }
 }
@@ -3275,6 +4020,49 @@ static long long OnDeviceAgentLL(id v)
 - (void)factoryReset;
 @end
 
+static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *outStep, NSString **outActionName)
+{
+  if (![line isKindOfClass:NSString.class]) {
+    return NO;
+  }
+
+  NSString *trimmed = OnDeviceAgentTrim(line);
+  if (![trimmed hasPrefix:@"{"] || ![trimmed hasSuffix:@"}"]) {
+    return NO;
+  }
+
+  NSData *data = [trimmed dataUsingEncoding:NSUTF8StringEncoding];
+  if (data.length == 0) {
+    return NO;
+  }
+
+  id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![obj isKindOfClass:NSDictionary.class]) {
+    return NO;
+  }
+  NSDictionary *d = (NSDictionary *)obj;
+
+  NSString *event = [d[@"event"] isKindOfClass:NSString.class] ? (NSString *)d[@"event"] : @"";
+  if (![event isEqualToString:@"step"]) {
+    return NO;
+  }
+
+  NSInteger step = OnDeviceAgentParseInt(d[@"step"], -1);
+  NSString *action = [d[@"action"] isKindOfClass:NSString.class] ? (NSString *)d[@"action"] : @"";
+  action = OnDeviceAgentTrim(action);
+  if (step < 0 || action.length == 0) {
+    return NO;
+  }
+
+  if (outStep != NULL) {
+    *outStep = step;
+  }
+  if (outActionName != NULL) {
+    *outActionName = action;
+  }
+  return YES;
+}
+
 @implementation OnDeviceAgentManager
 
 + (instancetype)shared
@@ -3324,7 +4112,17 @@ static long long OnDeviceAgentLL(id v)
     while (self.logLines.count > kOnDeviceAgentMaxLogLines) {
       [self.logLines removeObjectAtIndex:0];
     }
+
+    if (self.running && self.agent != nil && !self.agent.stopRequested && ![self.lastMessage isEqualToString:@"Stopping..."]) {
+      NSInteger step = -1;
+      NSString *actionName = nil;
+      if (OnDeviceAgentParseStepActionFromLogLine(l, &step, &actionName)) {
+        self.lastMessage = [NSString stringWithFormat:@"Step %ld: Executing %@", (long)step, actionName];
+      }
+    }
+
     [FBLogger log:l];
+    [[OnDeviceAgentEventHub shared] broadcastEvent:@"log" data:l];
   });
 }
 
@@ -3344,6 +4142,23 @@ static long long OnDeviceAgentLL(id v)
       d[@"ts"] = OnDeviceAgentNowString();
     }
     [self.chatItems addObject:d.copy];
+
+    if (self.running && self.agent != nil && !self.agent.stopRequested && ![self.lastMessage isEqualToString:@"Stopping..."]) {
+      NSInteger step = OnDeviceAgentParseInt(d[@"step"], -1);
+      NSInteger attempt = OnDeviceAgentParseInt(d[@"attempt"], 0);
+      NSString *kind = [d[@"kind"] isKindOfClass:NSString.class] ? (NSString *)d[@"kind"] : @"";
+      if (step >= 0) {
+        if ([kind isEqualToString:@"request"]) {
+          self.lastMessage = (attempt > 0)
+            ? [NSString stringWithFormat:@"Step %ld: Calling model (attempt %ld)", (long)step, (long)attempt]
+            : [NSString stringWithFormat:@"Step %ld: Calling model", (long)step];
+        } else if ([kind isEqualToString:@"response"]) {
+          self.lastMessage = (attempt > 0)
+            ? [NSString stringWithFormat:@"Step %ld: Parsing output (attempt %ld)", (long)step, (long)attempt]
+            : [NSString stringWithFormat:@"Step %ld: Parsing output", (long)step];
+        }
+      }
+    }
 
     NSInteger maxSteps = OnDeviceAgentMaxChatSteps(self.config);
     NSInteger lastStep = OnDeviceAgentParseInt(d[@"step"], -1);
@@ -3367,6 +4182,8 @@ static long long OnDeviceAgentLL(id v)
     while (self.chatItems.count > hardLimit) {
       [self.chatItems removeObjectAtIndex:0];
     }
+
+    [[OnDeviceAgentEventHub shared] broadcastJSONObject:d.copy event:@"chat"];
   });
 }
 
@@ -3388,6 +4205,13 @@ static long long OnDeviceAgentLL(id v)
     [self.chatItems removeAllObjects];
     [self.logLines removeAllObjects];
   });
+
+  NSDictionary *snapshot = @{
+    @"status": [self status],
+    @"logs": [self logs],
+    @"chat": [self chat],
+  };
+  [[OnDeviceAgentEventHub shared] broadcastJSONObject:snapshot event:@"snapshot"];
 }
 
 - (void)removePersistedConfigFromDefaults
@@ -3443,6 +4267,13 @@ static long long OnDeviceAgentLL(id v)
     [self.config removeAllObjects];
     [self loadConfigFromDefaults];
   });
+
+  NSDictionary *snapshot = @{
+    @"status": [self status],
+    @"logs": [self logs],
+    @"chat": [self chat],
+  };
+  [[OnDeviceAgentEventHub shared] broadcastJSONObject:snapshot event:@"snapshot"];
 }
 
 - (void)storeStepScreenshotPNG:(NSData *)png step:(NSInteger)step token:(NSInteger)token
@@ -3928,42 +4759,53 @@ static long long OnDeviceAgentLL(id v)
       }
       [strongSelf storeStepScreenshotPNG:png step:step token:token];
     };
-    OnDeviceAgentFinishBlock finish = ^(BOOL success, NSString *message) {
-      __strong __typeof(weakSelf) strongSelf = weakSelf;
-      if (strongSelf == nil) {
-        return;
-      }
-      NSString *finalMessage = message ?: (success ? @"Finished" : @"Stopped");
-      NSString *line = [NSString stringWithFormat:@"%@ [AGENT] %@", OnDeviceAgentNowString(), finalMessage];
-      [strongSelf appendLog:line token:token];
-      dispatch_async(strongSelf.stateQueue, ^{
-        if (token != strongSelf.activeRunToken) {
-          return;
-        }
+	    OnDeviceAgentFinishBlock finish = ^(BOOL success, NSString *message) {
+	      __strong __typeof(weakSelf) strongSelf = weakSelf;
+	      if (strongSelf == nil) {
+	        return;
+	      }
+	      NSString *finalMessage = message ?: (success ? @"Finished" : @"Stopped");
+	      [strongSelf appendLog:OnDeviceAgentLogJSONLine(success ? @"info" : @"error", @"runner", @"run_finished", finalMessage, @{@"success": @(success)}) token:token];
+	      dispatch_async(strongSelf.stateQueue, ^{
+	        if (token != strongSelf.activeRunToken) {
+	          return;
+	        }
         strongSelf.running = NO;
         strongSelf.lastMessage = finalMessage;
+        OnDeviceAgentScheduleRunEndedNotification(finalMessage);
         if (strongSelf.agent != nil) {
           strongSelf.notes = strongSelf.agent.workingNote ?: (strongSelf.notes ?: @"");
           strongSelf.tokenUsage = [strongSelf.agent tokenUsageSnapshot] ?: (strongSelf.tokenUsage ?: @{});
         }
         strongSelf.agent = nil;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+          [[OnDeviceAgentEventHub shared] broadcastJSONObject:[strongSelf status] event:@"status"];
+        });
       });
-    };
+	    };
 
-    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot finish:finish];
-    [self appendLog:@"[AGENT] Agent created. Running..." token:token];
-    [self.agent start];
-  });
+	    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot finish:finish];
+	    [self appendLog:OnDeviceAgentLogJSONLine(@"info", @"runner", @"run_started", nil, nil) token:token];
+	    [self.agent start];
+	  });
 
   if (!ok && error) {
     *error = err;
+  }
+  if (ok) {
+    NSDictionary *snapshot = @{
+      @"status": [self status],
+      @"logs": [self logs],
+      @"chat": [self chat],
+    };
+    [[OnDeviceAgentEventHub shared] broadcastJSONObject:snapshot event:@"snapshot"];
   }
   return ok;
 }
 
 - (void)stop
 {
-  dispatch_async(self.stateQueue, ^{
+  dispatch_sync(self.stateQueue, ^{
     if (!self.running || self.agent == nil) {
       self.lastMessage = @"Not running";
       return;
@@ -3971,6 +4813,8 @@ static long long OnDeviceAgentLL(id v)
     self.lastMessage = @"Stopping...";
     [self.agent requestStop];
   });
+
+  [[OnDeviceAgentEventHub shared] broadcastJSONObject:[self status] event:@"status"];
 }
 
 @end
@@ -4590,13 +5434,38 @@ static NSString *OnDeviceAgentPageHTML(void)
     @"      }\n"
     @"      const chat = await api('/agent/chat');\n"
     @"      lastChatItems = (chat.items || []);\n"
-    @"      renderChat();\n"
-    @"      const logs = await api('/agent/logs');\n"
-    @"      document.getElementById('logs').textContent = (logs.lines||[]).join('\\n');\n"
-    @"      } finally {\n"
-    @"        refreshInFlight = false;\n"
-    @"      }\n"
-    @"    }\n"
+	    @"      renderChat();\n"
+	    @"      const logs = await api('/agent/logs');\n"
+	    @"      const formatted = (logs.lines||[]).map((line) => {\n"
+	    @"        const s = (line||'').toString().trim();\n"
+	    @"        if (s.startsWith('{') && s.endsWith('}')) {\n"
+	    @"          try {\n"
+	    @"            const d = JSON.parse(s);\n"
+	    @"            const ts = (d.ts||'').toString();\n"
+	    @"            const lvl = (d.lvl||'INFO').toString().toUpperCase();\n"
+	    @"            const tag = (d.tag||'').toString();\n"
+	    @"            const ev = (d.event||'').toString();\n"
+	    @"            const msg = (d.msg||'').toString();\n"
+	    @"            let tail = '';\n"
+	    @"            if (ev === 'step') {\n"
+	    @"              tail = `step=${d.step} action=${d.action||''}`.trim();\n"
+	    @"            } else if (ev === 'token_usage') {\n"
+	    @"              tail = `req=${d.req} +in=${d.d_in} +out=${d.d_out} +cached=${d.d_cached} +total=${d.d_total} cum(in=${d.c_in} out=${d.c_out} cached=${d.c_cached} total=${d.c_total})`;\n"
+	    @"            } else if (d.error) {\n"
+	    @"              tail = `error=${(d.error||'').toString()}`;\n"
+	    @"            }\n"
+	    @"            const hdr = `${ts} [${lvl}]${tag ? ` [${tag}]` : ''}${ev ? ` [${ev}]` : ''}`.trim();\n"
+	    @"            const main = msg.length ? msg : ev;\n"
+	    @"            return `${hdr} ${main}${tail ? ` ${tail}` : ''}`.trim();\n"
+	    @"          } catch (e) {}\n"
+	    @"        }\n"
+	    @"        return s;\n"
+	    @"      });\n"
+	    @"      document.getElementById('logs').textContent = formatted.join('\\n');\n"
+	    @"      } finally {\n"
+	    @"        refreshInFlight = false;\n"
+	    @"      }\n"
+	    @"    }\n"
     @"    async function saveCfg(){\n"
     @"      await commitIME();\n"
     @"      if (!validateBeforeStart()) return;\n"
@@ -4923,6 +5792,7 @@ static NSString *OnDeviceAgentEditPageHTML(void)
     [[FBRoute GET:@"/agent/status"].withoutSession respondWithTarget:self action:@selector(handleGetStatus:)],
     [[FBRoute GET:@"/agent/logs"].withoutSession respondWithTarget:self action:@selector(handleGetLogs:)],
     [[FBRoute GET:@"/agent/chat"].withoutSession respondWithTarget:self action:@selector(handleGetChat:)],
+    [[FBRoute GET:@"/agent/events"].withoutSession respondWithTarget:self action:@selector(handleGetEvents:)],
     [[FBRoute GET:@"/agent/step_screenshot"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshot:)],
     [[FBRoute POST:@"/agent/config"].withoutSession respondWithTarget:self action:@selector(handlePostConfig:)],
     [[FBRoute POST:@"/agent/start"].withoutSession respondWithTarget:self action:@selector(handlePostStart:)],
@@ -4983,6 +5853,16 @@ static NSString *OnDeviceAgentEditPageHTML(void)
   return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] chat]});
 }
 
++ (id<FBResponsePayload>)handleGetEvents:(FBRouteRequest *)request
+{
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  BOOL includeDefaultSystemPrompt = OnDeviceAgentParseBool(request.parameters[@"include_default_system_prompt"], NO);
+  return [[OnDeviceAgentEventStreamPayload alloc] initWithIncludeDefaultSystemPrompt:includeDefaultSystemPrompt];
+}
+
 + (id<FBResponsePayload>)handleGetStepScreenshot:(FBRouteRequest *)request
 {
   NSString *authError = nil;
@@ -5014,7 +5894,9 @@ static NSString *OnDeviceAgentEditPageHTML(void)
   if (!ok) {
     return OnDeviceAgentBadRequestPayload(errMsg ?: @"Invalid config update");
   }
-  return FBResponseWithObject([[OnDeviceAgentManager shared] status]);
+  NSDictionary *st = [[OnDeviceAgentManager shared] status];
+  [[OnDeviceAgentEventHub shared] broadcastJSONObject:st event:@"status"];
+  return FBResponseWithObject(st);
 }
 
 + (id<FBResponsePayload>)handlePostStart:(FBRouteRequest *)request
@@ -5083,6 +5965,7 @@ static NSString *OnDeviceAgentEditPageHTML(void)
   } else {
     [FBConfiguration disableScreenshots];
   }
+  OnDeviceAgentConfigureNotificationsPromptIfNeeded();
   OnDeviceAgentTriggerWirelessDataPromptIfNeeded();
   [super setUp];
 }

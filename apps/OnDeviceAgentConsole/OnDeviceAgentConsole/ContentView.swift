@@ -76,35 +76,45 @@ struct ContentView: View {
       .listStyle(.sidebar)
       .frame(minWidth: 190)
     } detail: {
-      Group {
-        switch selectedTab {
-        case .run:
-          RunView()
-        case .logs:
-          LogsView()
-        case .chat:
-          ChatView()
-        case .notes:
-          NotesView()
+      VStack(spacing: 0) {
+        Group {
+          switch selectedTab {
+          case .run:
+            RunView()
+          case .logs:
+            LogsView()
+          case .chat:
+            ChatView()
+          case .notes:
+            NotesView()
+          }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     #else
     TabView(selection: $selectedTab) {
-      RunView()
+      VStack(spacing: 0) {
+        RunView()
+      }
         .tabItem { Label("Run", systemImage: "slider.horizontal.3") }
         .tag(Tab.run)
 
-      LogsView()
+      VStack(spacing: 0) {
+        LogsView()
+      }
         .tabItem { Label("Logs", systemImage: "doc.plaintext") }
         .tag(Tab.logs)
 
-      ChatView()
+      VStack(spacing: 0) {
+        ChatView()
+      }
         .tabItem { Label("Chat", systemImage: "text.bubble") }
         .tag(Tab.chat)
 
-      NotesView()
+      VStack(spacing: 0) {
+        NotesView()
+      }
         .tabItem { Label("Notes", systemImage: "note.text") }
         .tag(Tab.notes)
     }
@@ -112,25 +122,125 @@ struct ContentView: View {
   }
 }
 
-private struct RunView: View {
-  @EnvironmentObject private var store: ConsoleStore
-  @State private var isEditingTask = false
-  @State private var isEditingSystemPrompt = false
-  @State private var isImportingConfig = false
-  @State private var isExportingConfig = false
-  @State private var isQuickStartExpanded = true
-  @State private var isModelExpanded = false
-  @State private var isLimitsExpanded = false
-  @State private var isPromptExpanded = false
-  @State private var isAdvancedExpanded = false
-  @State private var isDangerExpanded = false
+private struct LiveProgressPanel: View {
+  let progress: ConsoleStore.LiveProgress
+  let onJumpToStep: (() -> Void)?
 
-  private var isRunning: Bool { store.status?.running ?? false }
+  init(progress: ConsoleStore.LiveProgress, onJumpToStep: (() -> Void)? = nil) {
+    self.progress = progress
+    self.onJumpToStep = onJumpToStep
+  }
+
+  private func phaseText(_ phase: ConsoleStore.LiveProgress.Phase) -> String {
+    switch phase {
+    case .idle:
+      return NSLocalizedString("Idle", comment: "")
+    case .stopping:
+      return NSLocalizedString("Stopping…", comment: "")
+    case .callingModel:
+      return NSLocalizedString("Calling model…", comment: "")
+    case .parsingOutput:
+      return NSLocalizedString("Parsing output…", comment: "")
+    case .executingAction:
+      return NSLocalizedString("Executing action…", comment: "")
+    }
+  }
 
   var body: some View {
-    NavigationStack {
-      Form {
-        Section {
+    if progress.running {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .firstTextBaseline) {
+          Text("Live")
+            .font(.headline)
+
+          Spacer()
+
+          if let onJumpToStep, progress.step != nil {
+            Button("Jump") {
+              onJumpToStep()
+            }
+            #if os(macOS)
+            .buttonStyle(.link)
+            #endif
+            .font(.footnote)
+          }
+        }
+
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          if let step = progress.step {
+            Text(String(format: NSLocalizedString("Step %d", comment: ""), step))
+              .font(.system(.footnote, design: .monospaced))
+          }
+
+          Text(phaseText(progress.phase))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+          if let action = progress.action, !action.isEmpty {
+            Text(action)
+              .font(.system(.footnote, design: .monospaced))
+              .foregroundStyle(.secondary)
+          }
+        }
+
+        if let next = progress.nextPlanItem, !next.isEmpty {
+          Text(String(format: NSLocalizedString("Next: %@", comment: ""), next))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .lineLimit(3)
+        }
+
+        if let t = progress.tokens {
+          Text(
+            String(
+              format: NSLocalizedString(
+                "Δ(in=%d, out=%d, cached=%d, total=%d)  cum(in=%d, out=%d, cached=%d, total=%d)",
+                comment: ""
+              ),
+              t.delta.input,
+              t.delta.output,
+              t.delta.cached,
+              t.delta.total,
+              t.cumulative.input,
+              t.cumulative.output,
+              t.cumulative.cached,
+              t.cumulative.total
+            )
+          )
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+          .textSelection(.enabled)
+        }
+      }
+      .padding(12)
+      .background(Color.secondary.opacity(0.06))
+      .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .padding(.vertical, 4)
+    }
+  }
+}
+
+	private struct RunView: View {
+	  @EnvironmentObject private var store: ConsoleStore
+	  @State private var isEditingTask = false
+	  @State private var isEditingSystemPrompt = false
+	  @State private var isImportingConfig = false
+	  @State private var isExportingConfig = false
+	  @State private var isQuickStartExpanded = true
+	  @State private var isRunDetailsExpanded = false
+	  @State private var isModelExpanded = false
+	  @State private var isLimitsExpanded = false
+	  @State private var isPromptExpanded = false
+	  @State private var isAdvancedExpanded = false
+	  @State private var isDangerExpanded = false
+
+	  private var isRunning: Bool { store.status?.running ?? false }
+
+	  var body: some View {
+	    NavigationStack {
+	      Form {
+	        Section {
           DisclosureGroup(
             isExpanded: $isQuickStartExpanded,
             content: {
@@ -138,14 +248,54 @@ private struct RunView: View {
               let usage = store.status?.tokenUsage
               let showUsage = (usage?.requests ?? 0) > 0 || (usage?.totalTokens ?? 0) > 0
               let lastMessage = store.status?.lastMessage ?? ""
-              let connectionErr = store.connectionError ?? ""
-              let actionErr = store.lastActionError ?? ""
-              let runErrors = store.runValidationErrors()
-              let showStatusPanel =
-                showLANHint || !lastMessage.isEmpty || !connectionErr.isEmpty || !actionErr.isEmpty || !runErrors.isEmpty
-              let canStart = !isRunning && runErrors.isEmpty && connectionErr.isEmpty
+	              let connectionErr = store.connectionError ?? ""
+	              let actionErr = store.lastActionError ?? ""
+	              let runErrors = store.runValidationErrors()
+	              let canStart = !isRunning && runErrors.isEmpty && connectionErr.isEmpty
+	              let shouldShowDetails =
+	                showLANHint || showUsage || !lastMessage.isEmpty || !connectionErr.isEmpty || !actionErr.isEmpty || !runErrors.isEmpty
 
-              if showStatusPanel {
+	              VStack(alignment: .leading, spacing: 14) {
+	                InlineEditHeader("Task") { isEditingTask = true }
+
+	                if store.draft.task.isEmpty {
+	                  Text("Enter a task…")
+	                    .font(.footnote)
+	                    .foregroundStyle(.secondary)
+	                } else {
+	                  Text(store.draft.task)
+	                    .font(.footnote)
+	                    .lineLimit(6)
+	                }
+
+	                ActionButtonField("Start run", disabled: !canStart) {
+	                  Task { await store.startAgent() }
+	                }
+
+	                ActionButtonField("Stop run", disabled: !isRunning, role: .destructive) {
+	                  Task { await store.stopAgent() }
+	                }
+
+	                if store.liveProgress.running {
+	                  LiveProgressPanel(progress: store.liveProgress)
+	                }
+	              }
+	              .padding(12)
+	              .background(Color.secondary.opacity(0.06))
+	              .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+	              .padding(.vertical, 4)
+	              .listRowSeparator(.hidden)
+
+	              ConfigField(
+	                title: "Runner URL",
+	                help: "Runner is the WebDriverAgentRunner-Runner app on your iPhone. This URL connects the Console to Runner (port 8100).\n• On iPhone, use: http://127.0.0.1:8100\n• For LAN debugging, use the iPhone’s Wi‑Fi IP (make sure Runner’s Wireless Data is enabled).",
+	                placeholder: ConsoleStore.Defaults.wdaURL,
+	                text: $store.wdaURL,
+                keyboard: .URL,
+                collapsibleHelp: true
+              )
+
+              DisclosureGroup(isExpanded: $isRunDetailsExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
                   if showLANHint, let net = store.localNetworkAccess {
                     VStack(alignment: .leading, spacing: 6) {
@@ -164,6 +314,8 @@ private struct RunView: View {
                       )
                       .font(.footnote)
                       .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                      .lineSpacing(2)
                     }
                     .padding(.vertical, 2)
                   }
@@ -190,13 +342,15 @@ private struct RunView: View {
                       )
                       .font(.footnote)
                       .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                      .lineSpacing(2)
 
-                      DisclosureGroup("Details") {
-                        Text(connectionErr)
-                          .font(.system(.footnote, design: .monospaced))
-                          .foregroundStyle(.secondary)
-                          .textSelection(.enabled)
-                      }
+                      Text(connectionErr)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(6)
                     }
                   }
                   if !actionErr.isEmpty {
@@ -221,73 +375,51 @@ private struct RunView: View {
                     }
                     .padding(.vertical, 2)
                   }
-                }
-              }
-              InlineEditHeader("Task") { isEditingTask = true }
 
-              if store.draft.task.isEmpty {
-                Text("Enter a task…")
-                  .font(.footnote)
-                  .foregroundStyle(.secondary)
-              } else {
-                Text(store.draft.task)
-                  .font(.footnote)
-                  .lineLimit(6)
-              }
-
-              ConfigField(
-                title: "Runner URL",
-                help: "Runner is the WebDriverAgentRunner-Runner app on your iPhone. This URL connects the Console to Runner (port 8100).\n• On iPhone, use: http://127.0.0.1:8100\n• For LAN debugging, use the iPhone’s Wi‑Fi IP (make sure Runner’s Wireless Data is enabled).",
-                placeholder: ConsoleStore.Defaults.wdaURL,
-                text: $store.wdaURL,
-                keyboard: .URL
-              )
-
-              if showUsage, let usage {
-                VStack(alignment: .leading, spacing: 6) {
-                  Text("Token Usage")
-                    .font(.headline)
-
-                  VStack(alignment: .leading, spacing: 2) {
-                    Text(String(format: NSLocalizedString("Requests: %d", comment: ""), usage.requests))
-                    Text(
-                      String(
-                        format: NSLocalizedString("Input: %d  Output: %d", comment: ""),
-                        usage.inputTokens,
-                        usage.outputTokens
-                      )
-                    )
-                    Text(
-                      String(
-                        format: NSLocalizedString("Cached: %d  Total: %d", comment: ""),
-                        usage.cachedTokens,
-                        usage.totalTokens
-                      )
-                    )
+                  if showUsage, let usage {
+                    DisclosureGroup("Token Usage") {
+                      VStack(alignment: .leading, spacing: 2) {
+                        Text(String(format: NSLocalizedString("Requests: %d", comment: ""), usage.requests))
+                        Text(
+                          String(
+                            format: NSLocalizedString("Input: %d  Output: %d", comment: ""),
+                            usage.inputTokens,
+                            usage.outputTokens
+                          )
+                        )
+                        Text(
+                          String(
+                            format: NSLocalizedString("Cached: %d  Total: %d", comment: ""),
+                            usage.cachedTokens,
+                            usage.totalTokens
+                          )
+                        )
+                      }
+                      .font(.system(.footnote, design: .monospaced))
+                      .foregroundStyle(.secondary)
+                      .textSelection(.enabled)
+                      .padding(.top, 4)
+                    }
                   }
-                  .font(.system(.footnote, design: .monospaced))
-                  .foregroundStyle(.secondary)
-                  .textSelection(.enabled)
+
                 }
-                .padding(.vertical, 2)
+              } label: {
+                Text("Details")
+                  .font(.headline)
               }
-
-              ActionButtonField("Start run", disabled: !canStart) {
-                Task { await store.startAgent() }
+              .onAppear {
+                if shouldShowDetails {
+                  isRunDetailsExpanded = true
+                }
               }
-
-              ActionButtonField("Stop run", disabled: !isRunning, role: .destructive) {
-                Task { await store.stopAgent() }
+              .onChange(of: shouldShowDetails) { v in
+                if v {
+                  isRunDetailsExpanded = true
+                }
               }
-
-              Text(
-                "Tip: If Runner was just installed or updated, iOS may reset Runner’s Wireless Data permission to Off.\nIf Wi‑Fi access fails: Settings → Apps → Runner → Wireless Data → choose WLAN/WLAN & Cellular Data, then reopen Runner."
-              )
-              .font(.footnote)
-              .foregroundStyle(.secondary)
             },
             label: {
-              DisclosureHeader("Run") {
+              DisclosureHeader("Quick Start") {
                 let runErrors = store.runValidationErrors()
                 let connectionErr = store.connectionError ?? ""
                 if isRunning {
@@ -375,36 +507,27 @@ private struct RunView: View {
               ]
             )
 
-              VStack(alignment: .leading, spacing: 6) {
-                Text("API Key")
-                  .font(.headline)
+	              VStack(alignment: .leading, spacing: 6) {
+	                Text("API Key")
+	                  .font(.headline)
 
-                  let apiKeyPlaceholder = store.status?.config.apiKeySet == true ? "(set on device)" : "sk-..."
-                  if store.draft.showApiKey {
-                    #if os(macOS)
-                    TextField("", text: $store.draft.apiKey, prompt: Text(apiKeyPlaceholder))
-                      .font(.system(.body, design: .monospaced))
-                    #else
-                    TextField(apiKeyPlaceholder, text: $store.draft.apiKey)
-                      #if canImport(UIKit)
-                      .textInputAutocapitalization(.never)
-                      .autocorrectionDisabled()
-                      #endif
-                      .font(.system(.body, design: .monospaced))
-                    #endif
-                  } else {
-                    #if os(macOS)
-                    SecureField("", text: $store.draft.apiKey, prompt: Text(apiKeyPlaceholder))
-                      .font(.system(.body, design: .monospaced))
-                    #else
-                    SecureField(apiKeyPlaceholder, text: $store.draft.apiKey)
-                      #if canImport(UIKit)
-                      .textInputAutocapitalization(.never)
-                      .autocorrectionDisabled()
-                      #endif
-                      .font(.system(.body, design: .monospaced))
-                    #endif
-                  }
+	                  let apiKeyPlaceholderKey = store.status?.config.apiKeySet == true ? "(set on device)" : "sk-..."
+	                  let apiKeyPlaceholder = NSLocalizedString(apiKeyPlaceholderKey, comment: "")
+	                  if store.draft.showApiKey {
+	                    TextField("", text: $store.draft.apiKey, prompt: Text(verbatim: apiKeyPlaceholder))
+	                      .font(.system(.body, design: .monospaced))
+	                    #if canImport(UIKit)
+	                    .textInputAutocapitalization(.never)
+	                    .autocorrectionDisabled()
+	                    #endif
+	                  } else {
+	                    SecureField("", text: $store.draft.apiKey, prompt: Text(verbatim: apiKeyPlaceholder))
+	                      .font(.system(.body, design: .monospaced))
+	                    #if canImport(UIKit)
+	                    .textInputAutocapitalization(.never)
+	                    .autocorrectionDisabled()
+	                    #endif
+	                  }
 
               Text("Required (unless already saved on device). Leave empty to keep the existing key.")
                 .font(.footnote)
@@ -472,22 +595,19 @@ private struct RunView: View {
 
         Section {
           DisclosureGroup(isExpanded: $isAdvancedExpanded) {
-              VStack(alignment: .leading, spacing: 6) {
-                  Text("Agent token (for LAN)")
-                    .font(.headline)
+	              VStack(alignment: .leading, spacing: 6) {
+	                  Text("Agent token (for LAN)")
+	                    .font(.headline)
 
-                  let agentTokenPlaceholder = store.status?.config.agentTokenSet == true ? "(set on Runner)" : "optional for localhost"
-                  #if os(macOS)
-                  TextField("", text: $store.draft.agentToken, prompt: Text(agentTokenPlaceholder))
-                    .font(.system(.body, design: .monospaced))
-                  #else
-                  TextField(agentTokenPlaceholder, text: $store.draft.agentToken)
-                  #if canImport(UIKit)
-                  .textInputAutocapitalization(.never)
-                  .autocorrectionDisabled()
-                  #endif
-                  .font(.system(.body, design: .monospaced))
-                  #endif
+	                  let agentTokenPlaceholderKey = store.status?.config.agentTokenSet == true ? "(set on Runner)" : "optional for localhost"
+	                  let agentTokenPlaceholder = NSLocalizedString(agentTokenPlaceholderKey, comment: "")
+	                  TextField("", text: $store.draft.agentToken, prompt: Text(verbatim: agentTokenPlaceholder))
+	                    .font(.system(.body, design: .monospaced))
+	                  #if canImport(UIKit)
+	                  .textInputAutocapitalization(.never)
+	                  .autocorrectionDisabled()
+	                  #endif
+	                  .font(.system(.body, design: .monospaced))
 
                 Text("Protects /agent/* over Wi‑Fi/LAN. If empty, Runner only allows localhost.")
                   .font(.footnote)
@@ -613,6 +733,7 @@ private struct RunView: View {
         }
         #if os(macOS)
         .formStyle(.grouped)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         #endif
         .navigationTitle("On‑Device Agent")
         #if canImport(UIKit)
@@ -631,20 +752,45 @@ private struct RunView: View {
         }
         #endif
       }
-      .sheet(isPresented: $isEditingTask) {
-        TextEditorSheet(title: "Task", text: $store.draft.task)
-          .onAppear { store.suspendAutoRefresh() }
-          .onDisappear { store.resumeAutoRefresh() }
-      }
-      .sheet(isPresented: $isEditingSystemPrompt) {
-        SystemPromptEditorSheet(
-          title: "System Prompt",
-          systemPrompt: $store.draft.systemPrompt,
-          defaultTemplate: store.defaultSystemPromptTemplate
-        )
-        .onAppear { store.suspendAutoRefresh() }
-        .onDisappear { store.resumeAutoRefresh() }
-      }
+		      #if canImport(UIKit)
+			      .fullScreenCover(isPresented: $isEditingTask) {
+			        TextEditorSheet(title: "Task", text: $store.draft.task)
+			          .onAppear { store.suspendAutoRefresh() }
+			          .onDisappear {
+			            store.resumeAutoRefresh()
+			          }
+			      }
+			      .fullScreenCover(isPresented: $isEditingSystemPrompt) {
+			        SystemPromptEditorSheet(
+			          title: "System Prompt",
+			          systemPrompt: $store.draft.systemPrompt,
+			          defaultTemplate: store.defaultSystemPromptTemplate
+			        )
+			        .onAppear { store.suspendAutoRefresh() }
+			        .onDisappear {
+			          store.resumeAutoRefresh()
+			        }
+			      }
+			      #else
+			      .sheet(isPresented: $isEditingTask) {
+			        TextEditorSheet(title: "Task", text: $store.draft.task)
+			          .onAppear { store.suspendAutoRefresh() }
+			          .onDisappear {
+			            store.resumeAutoRefresh()
+			          }
+			      }
+			      .sheet(isPresented: $isEditingSystemPrompt) {
+			        SystemPromptEditorSheet(
+			          title: "System Prompt",
+			          systemPrompt: $store.draft.systemPrompt,
+			          defaultTemplate: store.defaultSystemPromptTemplate
+			        )
+			        .onAppear { store.suspendAutoRefresh() }
+			        .onDisappear {
+			          store.resumeAutoRefresh()
+			        }
+			      }
+			      #endif
       .sheet(isPresented: $isImportingConfig) {
         QRCodeImportSheet(isPresented: $isImportingConfig) { raw in
           do {
@@ -697,6 +843,8 @@ private struct LimitField: View {
       Text(help)
         .font(.footnote)
         .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .lineSpacing(2)
     }
     .padding(.vertical, 2)
   }
@@ -730,16 +878,18 @@ private struct ToggleField: View {
         Text(help)
           .font(.footnote)
           .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .lineSpacing(2)
       }
     }
     .padding(.vertical, 2)
   }
 }
 
-private struct ActionButtonField: View {
-  let title: LocalizedStringKey
-  let help: LocalizedStringKey?
-  let role: ButtonRole?
+	private struct ActionButtonField: View {
+	  let title: LocalizedStringKey
+	  let help: LocalizedStringKey?
+	  let role: ButtonRole?
   let disabled: Bool
   let action: () -> Void
 
@@ -751,56 +901,66 @@ private struct ActionButtonField: View {
     self.action = action
   }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 0) {
-            Button(role: role, action: action) {
-          Text(title)
-            .font(.headline)
-            #if os(macOS)
-            .foregroundStyle(role == .destructive ? .red : Color.accentColor)
-            #endif
-        }
-        #if os(macOS)
-        .buttonStyle(.link)
-        #endif
-        .disabled(disabled)
+	  var body: some View {
+	    VStack(alignment: .leading, spacing: 6) {
+	      HStack(spacing: 0) {
+	            Button(role: role, action: action) {
+	          Text(title)
+	            .font(.headline)
+	            #if os(macOS)
+	            .foregroundStyle(role == .destructive ? .red : Color.accentColor)
+	            #endif
+	        }
+	        #if canImport(UIKit)
+	        .buttonStyle(.borderless)
+	        #endif
+	        #if os(macOS)
+	        .buttonStyle(.link)
+	        .controlSize(.regular)
+	        .font(.headline)
+	        #endif
+	        .disabled(disabled)
 
-        Spacer(minLength: 0)
-      }
+	        Spacer(minLength: 0)
+	      }
 
       if let help {
         Text(help)
           .font(.footnote)
           .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .lineSpacing(2)
       }
     }
     .padding(.vertical, 2)
   }
 }
 
-private struct InlineEditHeader: View {
-  let title: LocalizedStringKey
-  let onEdit: () -> Void
+	private struct InlineEditHeader: View {
+	  let title: LocalizedStringKey
+	  let onEdit: () -> Void
 
   init(_ title: LocalizedStringKey, onEdit: @escaping () -> Void) {
     self.title = title
     self.onEdit = onEdit
   }
 
-  var body: some View {
-    HStack {
-      Text(title)
-        .font(.headline)
-      Spacer()
-      Button("Edit", action: onEdit)
-        .font(.footnote)
-        #if os(macOS)
-        .buttonStyle(.link)
-        #endif
-    }
-  }
-}
+	  var body: some View {
+	    HStack {
+	      Text(title)
+	        .font(.headline)
+	      Spacer()
+	      Button("Edit", action: onEdit)
+	        .font(.footnote)
+	        #if canImport(UIKit)
+	        .buttonStyle(.borderless)
+	        #endif
+	        #if os(macOS)
+	        .buttonStyle(.link)
+	        #endif
+	    }
+	  }
+	}
 
 private struct ConfigField: View {
   let title: LocalizedStringKey
@@ -808,6 +968,24 @@ private struct ConfigField: View {
   let placeholder: String
   @Binding var text: String
   let keyboard: OnDeviceAgentKeyboard
+  let collapsibleHelp: Bool
+  let helpTitle: LocalizedStringKey = "Help"
+
+  init(
+    title: LocalizedStringKey,
+    help: String,
+    placeholder: String,
+    text: Binding<String>,
+    keyboard: OnDeviceAgentKeyboard,
+    collapsibleHelp: Bool = false
+  ) {
+    self.title = title
+    self.help = help
+    self.placeholder = placeholder
+    _text = text
+    self.keyboard = keyboard
+    self.collapsibleHelp = collapsibleHelp
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -828,9 +1006,25 @@ private struct ConfigField: View {
         .font(.system(.body, design: .monospaced))
       #endif
 
-      Text(verbatim: NSLocalizedString(help, comment: ""))
-        .font(.footnote)
-        .foregroundStyle(.secondary)
+      let helpText = NSLocalizedString(help, comment: "")
+      if !helpText.isEmpty {
+        if collapsibleHelp {
+          DisclosureGroup(helpTitle) {
+            Text(verbatim: helpText)
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .lineSpacing(2)
+              .padding(.top, 4)
+          }
+        } else {
+          Text(verbatim: helpText)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .lineSpacing(2)
+        }
+      }
     }
     .padding(.vertical, 2)
   }
@@ -860,6 +1054,8 @@ private struct ConfigPicker: View {
         Text(verbatim: NSLocalizedString(help, comment: ""))
           .font(.footnote)
           .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .lineSpacing(2)
       }
     }
     .padding(.vertical, 2)
@@ -868,35 +1064,346 @@ private struct ConfigPicker: View {
 
 private struct LogsView: View {
   @EnvironmentObject private var store: ConsoleStore
+  @State private var searchText: String = ""
+  @State private var tagFilter: LogTagFilter = .all
+  @State private var levelFilter: LogLevelFilter = .all
+  @State private var followLatest: Bool = true
+  @State private var isFiltersPresented: Bool = false
+
+  private enum LogTagFilter: String, CaseIterable, Identifiable {
+    case all
+    case agent
+    case action
+    case model
+    case tokens
+    case runner
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+      switch self {
+      case .all: return "All"
+      case .agent: return "Agent"
+      case .action: return "Action"
+      case .model: return "Model"
+      case .tokens: return "Tokens"
+      case .runner: return "Runner"
+      }
+    }
+  }
+
+  private enum LogLevelFilter: String, CaseIterable, Identifiable {
+    case all
+    case debug
+    case info
+    case warn
+    case error
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+      switch self {
+      case .all: return "All"
+      case .debug: return "Debug"
+      case .info: return "Info"
+      case .warn: return "Warn"
+      case .error: return "Error"
+      }
+    }
+  }
+
+  private struct LogEntry: Identifiable {
+    let index: Int
+    let raw: String
+    let ts: String
+    let level: String
+    let tag: String
+    let event: String
+    let msg: String
+    let dict: [String: Any]?
+
+    var id: Int { index }
+
+    var levelKey: String {
+      level.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var tagKey: String {
+      tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var title: String {
+      if event == "step" {
+        let step = int("step")
+        let action = str("action")
+        if let step, !action.isEmpty {
+          return String(format: NSLocalizedString("Step %d · %@", comment: ""), step, action)
+        }
+      }
+      if event == "token_usage" {
+        return NSLocalizedString("Token Usage", comment: "")
+      }
+      if !msg.isEmpty { return msg }
+      let err = str("error")
+      if !err.isEmpty { return err }
+      return event.isEmpty ? raw : event
+    }
+
+    var subtitle: String? {
+      if event == "token_usage" {
+        let req = int("req") ?? 0
+        let dIn = int("d_in") ?? 0
+        let dOut = int("d_out") ?? 0
+        let dCached = int("d_cached") ?? 0
+        let dTotal = int("d_total") ?? 0
+        let cIn = int("c_in") ?? 0
+        let cOut = int("c_out") ?? 0
+        let cCached = int("c_cached") ?? 0
+        let cTotal = int("c_total") ?? 0
+        if req > 0 || cTotal > 0 {
+          return String(
+            format: NSLocalizedString("Δ(in=%d, out=%d, cached=%d, total=%d)  cum(in=%d, out=%d, cached=%d, total=%d)", comment: ""),
+            dIn, dOut, dCached, dTotal, cIn, cOut, cCached, cTotal
+          )
+        }
+      }
+      if event == "run_finished" {
+        if let success = bool("success") {
+          return success ? NSLocalizedString("Run ended", comment: "") : msg
+        }
+      }
+      let err = str("error")
+      if !err.isEmpty, title != err { return err }
+      return nil
+    }
+
+    func str(_ key: String) -> String {
+      (dict?[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func int(_ key: String) -> Int? {
+      let v = dict?[key]
+      if let i = v as? Int { return i }
+      if let n = v as? NSNumber { return n.intValue }
+      if let s = v as? String { return Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) }
+      return nil
+    }
+
+    func bool(_ key: String) -> Bool? {
+      let v = dict?[key]
+      if let b = v as? Bool { return b }
+      if let n = v as? NSNumber { return n.boolValue }
+      if let s = v as? String {
+        switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "y", "on":
+          return true
+        case "false", "0", "no", "n", "off":
+          return false
+        default:
+          return nil
+        }
+      }
+      return nil
+    }
+
+    var badgeColor: Color {
+      switch levelKey {
+      case "error": return .red
+      case "warn": return .orange
+      case "debug": return .secondary
+      default: return .blue
+      }
+    }
+  }
+
+  private func copyToPasteboard(_ text: String) {
+    #if canImport(UIKit)
+    UIPasteboard.general.string = text
+    #elseif canImport(AppKit)
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(text, forType: .string)
+    #endif
+  }
+
+  private func parseLogEntry(index: Int, raw: String) -> LogEntry {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.hasPrefix("{"), trimmed.hasSuffix("}"),
+       let data = trimmed.data(using: .utf8),
+       let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+       let dict = obj as? [String: Any]
+    {
+      let ts = (dict["ts"] as? String) ?? ""
+      let lvl = (dict["lvl"] as? String) ?? ""
+      let tag = (dict["tag"] as? String) ?? ""
+      let ev = (dict["event"] as? String) ?? ""
+      let msg = (dict["msg"] as? String) ?? ""
+      return LogEntry(index: index, raw: trimmed, ts: ts, level: lvl, tag: tag, event: ev, msg: msg, dict: dict)
+    }
+    return LogEntry(index: index, raw: trimmed, ts: "", level: "", tag: "", event: "", msg: trimmed, dict: nil)
+  }
+
+  private var entries: [LogEntry] {
+    store.logs.enumerated().map { parseLogEntry(index: $0.offset, raw: $0.element) }
+  }
+
+  private var filteredEntries: [LogEntry] {
+    let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return entries.filter { e in
+      if levelFilter != .all, e.levelKey != levelFilter.rawValue { return false }
+      if tagFilter != .all, e.tagKey != tagFilter.rawValue { return false }
+      if q.isEmpty { return true }
+      return e.raw.lowercased().contains(q) || e.title.lowercased().contains(q) || (e.subtitle ?? "").lowercased().contains(q)
+    }
+  }
 
   var body: some View {
     NavigationStack {
-      Group {
-        if store.logs.isEmpty, (store.logsError ?? "").isEmpty {
-          ContentUnavailableView(
-            NSLocalizedString("No logs yet", comment: ""),
-            systemImage: "doc.plaintext",
-            description: Text(NSLocalizedString("Logs will appear while the agent runs.", comment: ""))
-          )
-          .padding(.horizontal, 20)
-        } else {
-          ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-              if let err = store.logsError, !err.isEmpty {
-                Text(String(format: NSLocalizedString("Logs stale: %@", comment: ""), err))
-                  .font(.footnote)
-                  .foregroundStyle(.red)
-              }
+      ScrollViewReader { proxy in
+        Group {
+          if store.logs.isEmpty, (store.logsError ?? "").isEmpty {
+            ContentUnavailableView(
+              NSLocalizedString("No logs yet", comment: ""),
+              systemImage: "doc.plaintext",
+              description: Text(NSLocalizedString("Logs will appear while the agent runs.", comment: ""))
+            )
+            .padding(.horizontal, 20)
+          } else if filteredEntries.isEmpty {
+            ContentUnavailableView(
+              NSLocalizedString("No results", comment: ""),
+              systemImage: "magnifyingglass",
+              description: Text(NSLocalizedString("Try adjusting search or filters.", comment: ""))
+            )
+            .padding(.horizontal, 20)
+          } else {
+            List(filteredEntries) { e in
+              VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                  if !e.ts.isEmpty {
+                    Text(e.ts)
+                      .font(.system(.caption, design: .monospaced))
+                      .foregroundStyle(.secondary)
+                  }
+                  if !e.levelKey.isEmpty {
+                    Text(e.levelKey.uppercased())
+                      .font(.caption2.weight(.semibold))
+                      .foregroundStyle(e.badgeColor)
+                      .padding(.horizontal, 8)
+                      .padding(.vertical, 2)
+                      .background(e.badgeColor.opacity(0.12))
+                      .clipShape(Capsule())
+                  }
+                  if !e.tagKey.isEmpty {
+                    Text(e.tagKey)
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                  }
+                  Spacer()
+                  if !e.event.isEmpty {
+                    Text(e.event)
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                  }
+                }
 
-              Text(store.logs.joined(separator: "\n"))
-                .font(.system(.body, design: .monospaced))
+                Text(e.title)
+                  .font(.callout)
+                  .textSelection(.enabled)
+                  .fixedSize(horizontal: false, vertical: true)
+
+                if let sub = e.subtitle, !sub.isEmpty {
+                  Text(sub)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+              }
+              .contextMenu {
+                Button(NSLocalizedString("Copy", comment: "")) { copyToPasteboard(e.raw) }
+              }
+              .id(e.id)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
+            .listStyle(.plain)
+          }
+        }
+        .navigationTitle("Logs")
+        .searchable(text: $searchText)
+        .toolbar {
+          ToolbarItem(placement: .primaryAction) {
+            Button {
+              isFiltersPresented = true
+            } label: {
+              Image(systemName: "line.3.horizontal.decrease.circle")
+            }
+            .accessibilityLabel(NSLocalizedString("Filters", comment: ""))
+          }
+        }
+	        .sheet(isPresented: $isFiltersPresented) {
+	          NavigationStack {
+	            Form {
+	              Section {
+	                Toggle(NSLocalizedString("Follow latest", comment: ""), isOn: $followLatest)
+	              }
+
+	              Section {
+	                Picker(NSLocalizedString("Tag", comment: ""), selection: $tagFilter) {
+	                  ForEach(LogTagFilter.allCases) { f in
+	                    Text(f.title).tag(f)
+	                  }
+	                }
+	                #if os(iOS)
+	                  .pickerStyle(.navigationLink)
+	                #endif
+
+	                Picker(NSLocalizedString("Level", comment: ""), selection: $levelFilter) {
+	                  ForEach(LogLevelFilter.allCases) { f in
+	                    Text(f.title).tag(f)
+	                  }
+	                }
+	                #if os(iOS)
+	                  .pickerStyle(.navigationLink)
+	                #endif
+	              }
+
+	              Section {
+	                Button(NSLocalizedString("Jump to latest", comment: "")) {
+	                  guard let last = filteredEntries.last else { return }
+                  withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                  isFiltersPresented = false
+                }
+                Button(NSLocalizedString("Copy all", comment: "")) {
+                  copyToPasteboard(store.logs.joined(separator: "\n"))
+                  isFiltersPresented = false
+                }
+              }
+            }
+            .navigationTitle("Filters")
+            .toolbar {
+              ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { isFiltersPresented = false }
+              }
+            }
+          }
+        }
+        .onChange(of: store.logs.count) { _ in
+          guard !isFiltersPresented else { return }
+          guard followLatest, searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+          guard let last = filteredEntries.last else { return }
+          withAnimation {
+            proxy.scrollTo(last.id, anchor: .bottom)
+          }
+        }
+        .overlay(alignment: .topLeading) {
+          if let err = store.logsError, !err.isEmpty {
+            Text(String(format: NSLocalizedString("Logs stale: %@", comment: ""), err))
+              .font(.footnote)
+              .foregroundStyle(.red)
+              .padding(.horizontal, 16)
+              .padding(.vertical, 10)
           }
         }
       }
-      .navigationTitle("Logs")
     }
   }
 }
@@ -960,6 +1467,12 @@ private enum ChatExportHTML {
       return out
     }
 
+    func l(_ key: String) -> String {
+      esc(NSLocalizedString(key, comment: ""))
+    }
+
+    let lang = Locale.current.languageCode ?? "en"
+
     func svgOverlay(for annotation: ChatExportActionAnnotation) -> String? {
       switch annotation.kind {
       case .tap:
@@ -1004,11 +1517,11 @@ private enum ChatExportHTML {
     var parts: [String] = []
     parts.append("""
     <!doctype html>
-    <html lang="en">
+    <html lang="\(esc(lang))">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>On-device agent chat export</title>
+      <title>\(l("Chat export"))</title>
       <style>
         :root {
           color-scheme: light dark;
@@ -1050,17 +1563,24 @@ private enum ChatExportHTML {
     </head>
     <body>
       <div class="wrap">
-        <h1>Chat export</h1>
-        <div class="meta">Exported at <span class="mono">\(esc(snapshot.exportedAt))</span></div>
-        <div class="meta">Runner URL <span class="mono">\(esc(snapshot.runnerURL.isEmpty ? "(empty)" : snapshot.runnerURL))</span></div>
-        <div class="meta">Screenshot annotations \(snapshot.annotate ? "enabled" : "disabled")</div>
+        <h1>\(l("Chat export"))</h1>
+        <div class="meta">\(l("Exported at")) <span class="mono">\(esc(snapshot.exportedAt))</span></div>
+        <div class="meta">\(l("Runner URL")) <span class="mono">\(esc(snapshot.runnerURL.isEmpty ? NSLocalizedString("(empty)", comment: "") : snapshot.runnerURL))</span></div>
+        <div class="meta">\(l("Screenshot annotations")) \(snapshot.annotate ? l("enabled") : l("disabled"))</div>
     """)
 
     if let usage = snapshot.tokenUsage {
+      let usageText = [
+        String(format: NSLocalizedString("Requests: %d", comment: ""), usage.requests),
+        String(format: NSLocalizedString("Input tokens: %d", comment: ""), usage.inputTokens),
+        String(format: NSLocalizedString("Output tokens: %d", comment: ""), usage.outputTokens),
+        String(format: NSLocalizedString("Cached tokens: %d", comment: ""), usage.cachedTokens),
+        String(format: NSLocalizedString("Total tokens: %d", comment: ""), usage.totalTokens),
+      ].joined(separator: "\n")
       parts.append("""
         <div class="card">
-          <div class="meta">Token usage</div>
-          <pre>\(esc("requests: \(usage.requests)\ninput_tokens: \(usage.inputTokens)\noutput_tokens: \(usage.outputTokens)\ncached_tokens: \(usage.cachedTokens)\ntotal_tokens: \(usage.totalTokens)"))</pre>
+          <div class="meta">\(l("Token Usage"))</div>
+          <pre>\(esc(usageText))</pre>
         </div>
       """)
     }
@@ -1068,7 +1588,7 @@ private enum ChatExportHTML {
     if !snapshot.configText.isEmpty {
       parts.append("""
         <div class="card">
-          <div class="meta">Config (api_key excluded)</div>
+          <div class="meta">\(l("Config (api_key excluded)"))</div>
           <pre>\(esc(snapshot.configText))</pre>
         </div>
       """)
@@ -1077,23 +1597,35 @@ private enum ChatExportHTML {
     if !snapshot.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       parts.append("""
         <div class="card">
-          <div class="meta">Notes</div>
+          <div class="meta">\(l("Notes"))</div>
           <pre>\(esc(snapshot.notes))</pre>
         </div>
       """)
     }
 
-    parts.append("<div class=\"card\"><div class=\"meta\">Messages</div></div>")
+    parts.append("<div class=\"card\"><div class=\"meta\">\(l("Messages"))</div></div>")
 
     for it in snapshot.items {
       let step = it.step
-      let kind = it.kind.uppercased()
+      let kindUpper = it.kind.uppercased()
+      let kindLabel: String = {
+        switch it.kind.lowercased() {
+        case "request":
+          return NSLocalizedString("Request", comment: "")
+        case "response":
+          return NSLocalizedString("Response", comment: "")
+        default:
+          return kindUpper
+        }
+      }()
       let attempt = it.attempt
       let ts = it.ts
 
       var hdrParts: [String] = []
-      hdrParts.append("Step \(step) · \(kind)")
-      if let attempt { hdrParts.append("(attempt \(attempt))") }
+      hdrParts.append(String(format: NSLocalizedString("Step %d · %@", comment: ""), step, kindLabel))
+      if let attempt {
+        hdrParts.append(String(format: NSLocalizedString("(attempt %d)", comment: ""), attempt))
+      }
 
       parts.append("<div class=\"item\">")
       parts.append("<div class=\"hdr\"><div class=\"k\">\(esc(hdrParts.joined(separator: " ")))</div>")
@@ -1105,7 +1637,7 @@ private enum ChatExportHTML {
       if it.kind == "request", attempt == nil, let png = snapshot.screenshotsPNG[step] {
         let b64 = png.base64EncodedString()
         parts.append("<div class=\"shot\">")
-        parts.append("<img src=\"data:image/png;base64,\(b64)\" alt=\"step \(step) screenshot\" />")
+        parts.append("<img src=\"data:image/png;base64,\(b64)\" alt=\"\(esc(String(format: NSLocalizedString("Step %d screenshot", comment: ""), step)))\" />")
         if snapshot.annotate,
            let ann = snapshot.annotationsByStep[step],
            let svg = svgOverlay(for: ann)
@@ -1117,17 +1649,17 @@ private enum ChatExportHTML {
       }
 
       if !it.text.isEmpty {
-        parts.append("<div class=\"sec\"><div class=\"label\">text</div><pre>\(esc(it.text))</pre></div>")
+        parts.append("<div class=\"sec\"><div class=\"label\">\(l("Text"))</div><pre>\(esc(it.text))</pre></div>")
       }
       if !it.content.isEmpty {
-        parts.append("<div class=\"sec\"><div class=\"label\">content</div><pre>\(esc(it.content))</pre></div>")
+        parts.append("<div class=\"sec\"><div class=\"label\">\(l("Content"))</div><pre>\(esc(it.content))</pre></div>")
       }
       if !it.reasoning.isEmpty {
-        parts.append("<div class=\"sec\"><div class=\"label\">reasoning</div><pre>\(esc(it.reasoning))</pre></div>")
+        parts.append("<div class=\"sec\"><div class=\"label\">\(l("Reasoning"))</div><pre>\(esc(it.reasoning))</pre></div>")
       }
 
       if !it.raw.isEmpty {
-        parts.append("<details class=\"sec\"><summary>Raw</summary><pre>\(esc(it.raw))</pre></details>")
+        parts.append("<details class=\"sec\"><summary>\(l("Raw JSON"))</summary><pre>\(esc(it.raw))</pre></details>")
       }
 
       parts.append("</div>")
@@ -1149,6 +1681,482 @@ private struct ChatView: View {
   @State private var exportError: String?
   @State private var isExporting = false
   @State private var exportProgressText: String?
+
+  private struct StepGroup: Identifiable {
+    var step: Int
+    var items: [AgentChatItem]
+
+    var id: Int { step }
+
+    var primaryRequest: AgentChatItem? {
+      items.first { $0.kind == "request" && $0.attempt == nil }
+    }
+
+    var latestResponse: AgentChatItem? {
+      // Items preserve chronological order. The last response per step is the one that was used to execute the action.
+      items.last { $0.kind == "response" }
+    }
+
+    var attemptNumbers: [Int] {
+      let attempts = Set(items.compactMap { $0.attempt })
+      return attempts.sorted()
+    }
+
+    var timestamp: String? {
+      // Prefer the latest item's timestamp.
+      for it in items.reversed() {
+        if let ts = it.ts, !ts.isEmpty { return ts }
+      }
+      return nil
+    }
+  }
+
+  private struct ParsedRequestText {
+    var previousFailure: String?
+    var task: String?
+    var planChecklist: String?
+    var workingNotes: String?
+    var screenInfoJSON: String?
+    var other: String?
+  }
+
+  private static func prettyPrintedJSONIfPossible(_ text: String) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("{") || trimmed.hasPrefix("[") else {
+      return text
+    }
+    guard let data = trimmed.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+          JSONSerialization.isValidJSONObject(obj),
+          let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+          let pretty = String(data: prettyData, encoding: .utf8)
+    else {
+      return text
+    }
+    return pretty
+  }
+
+  private static func parseRequestText(_ text: String) -> ParsedRequestText {
+    var out = ParsedRequestText()
+    let rawLines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+    enum Section {
+      case prefix
+      case plan
+      case notes
+      case screen
+    }
+
+    var section: Section = .prefix
+    var prefixLines: [String] = []
+    var planLines: [String] = []
+    var noteLines: [String] = []
+    var screenLines: [String] = []
+
+    for line in rawLines {
+      let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      if t == "** Plan Checklist **" {
+        section = .plan
+        continue
+      }
+      if t == "** Working Notes **" {
+        section = .notes
+        continue
+      }
+      if t == "** Screen Info **" {
+        section = .screen
+        continue
+      }
+
+      switch section {
+      case .prefix:
+        prefixLines.append(line)
+      case .plan:
+        planLines.append(line)
+      case .notes:
+        noteLines.append(line)
+      case .screen:
+        screenLines.append(line)
+      }
+    }
+
+    func cleaned(_ lines: [String]) -> String? {
+      let s = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+      return s.isEmpty ? nil : s
+    }
+
+    // The prefix can include a recoverable failure hint injected by Runner.
+    if let firstNonEmpty = prefixLines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+      let firstLine = prefixLines[firstNonEmpty].trimmingCharacters(in: .whitespacesAndNewlines)
+      if firstLine.hasPrefix("上一步执行失败：") || firstLine.lowercased().hasPrefix("previous step failed") {
+        var body: [String] = []
+        var i = firstNonEmpty + 1
+        while i < prefixLines.count {
+          let l = prefixLines[i]
+          if l.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            break
+          }
+          body.append(l)
+          i += 1
+        }
+        out.previousFailure = cleaned(body)
+
+        // Remove the failure block from prefix.
+        prefixLines.removeSubrange(firstNonEmpty..<min(i, prefixLines.count))
+      }
+    }
+
+    // Step 0 doesn't include explicit markers; it's typically: <task>\n\n<screenInfoJSON>
+    if screenLines.isEmpty {
+      if let idx = prefixLines.firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") }) {
+        let taskLines = Array(prefixLines.prefix(upTo: idx))
+        let screen = Array(prefixLines.suffix(from: idx))
+        out.task = cleaned(taskLines)
+        out.screenInfoJSON = cleaned(screen)
+        out.other = nil
+      } else {
+        out.task = cleaned(prefixLines)
+      }
+    } else {
+      out.screenInfoJSON = cleaned(screenLines)
+      out.other = cleaned(prefixLines)
+    }
+
+    out.planChecklist = cleaned(planLines)
+    out.workingNotes = cleaned(noteLines)
+    return out
+  }
+
+  private var stepGroups: [StepGroup] {
+    var order: [Int] = []
+    var grouped: [Int: [AgentChatItem]] = [:]
+    for it in store.chatItems {
+      let s = it.step ?? -1
+      if grouped[s] == nil {
+        order.append(s)
+        grouped[s] = []
+      }
+      grouped[s, default: []].append(it)
+    }
+    return order.map { StepGroup(step: $0, items: grouped[$0] ?? []) }
+  }
+
+  private struct StepCard: View {
+    @EnvironmentObject private var store: ConsoleStore
+    let group: StepGroup
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          Text(String(format: NSLocalizedString("Step %d", comment: ""), group.step))
+            .font(.headline)
+
+          if let ann = store.stepActionAnnotations[group.step] {
+            Text(ann.name)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .padding(.horizontal, 8)
+              .padding(.vertical, 3)
+              .background(.thinMaterial)
+              .clipShape(Capsule())
+          }
+
+          Spacer()
+          if let ts = group.timestamp {
+            Text(ts).font(.caption).foregroundStyle(.secondary)
+          }
+        }
+
+	        if let req = group.primaryRequest {
+	          let parsed = ChatView.parseRequestText(req.text ?? "")
+	          VStack(alignment: .leading, spacing: 10) {
+	            Text("Input")
+	              .font(.caption.weight(.semibold))
+	              .foregroundStyle(.secondary)
+
+	            ScreenshotBlock(step: group.step)
+
+            if let msg = parsed.previousFailure, !msg.isEmpty {
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Previous step failed")
+                  .font(.caption)
+                  .foregroundStyle(.orange)
+                Text(msg)
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+              }
+            }
+
+            if let task = parsed.task, !task.isEmpty {
+              LabeledCodeBlock(title: "Task", text: task, style: .body)
+            }
+            if let plan = parsed.planChecklist, !plan.isEmpty {
+              LabeledCodeBlock(title: "Plan Checklist", text: plan, style: .monospaceFootnote)
+            }
+            if let notes = parsed.workingNotes, !notes.isEmpty {
+              LabeledCodeBlock(title: "Working Notes", text: notes, style: .body)
+            }
+            if let other = parsed.other, !other.isEmpty {
+              LabeledCodeBlock(title: "Text", text: other, style: .monospaceFootnote)
+            }
+            if let screen = parsed.screenInfoJSON, !screen.isEmpty {
+              DisclosureGroup("Screen Info (JSON)") {
+                Text(screen)
+                  .font(.system(.footnote, design: .monospaced))
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+                  .padding(.top, 4)
+              }
+	              .font(.caption)
+	              .foregroundStyle(.secondary)
+	            }
+	          }
+	          .padding(12)
+	          .background(Color.secondary.opacity(0.06))
+	          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+	        }
+
+	        if let resp = group.latestResponse {
+	          VStack(alignment: .leading, spacing: 10) {
+	            Text("Output")
+	              .font(.caption.weight(.semibold))
+	              .foregroundStyle(.secondary)
+
+            if let content = resp.content, !content.isEmpty {
+              LabeledCodeBlock(title: "Content", text: ChatView.prettyPrintedJSONIfPossible(content), style: .monospaceFootnote)
+            }
+
+            if let reasoning = resp.reasoning, !reasoning.isEmpty {
+              DisclosureGroup("Reasoning") {
+                Text(reasoning)
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+                  .padding(.top, 4)
+              }
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            }
+
+            if let raw = resp.raw, !raw.isEmpty {
+              DisclosureGroup("Raw JSON") {
+                Text(raw)
+                  .font(.system(.footnote, design: .monospaced))
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+                  .padding(.top, 4)
+              }
+              .font(.caption)
+	              .foregroundStyle(.secondary)
+	            }
+	          }
+	          .padding(12)
+	          .background(Color.secondary.opacity(0.06))
+	          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+	        }
+
+        let attempts = group.attemptNumbers
+        if !attempts.isEmpty {
+          DisclosureGroup(String(format: NSLocalizedString("Repair attempts (%d)", comment: ""), attempts.count)) {
+            VStack(alignment: .leading, spacing: 12) {
+              ForEach(attempts, id: \.self) { attempt in
+                AttemptBlock(step: group.step, attempt: attempt, items: group.items)
+              }
+            }
+            .padding(.top, 6)
+          }
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+	      }
+	      .frame(maxWidth: .infinity, alignment: .leading)
+	      .padding(12)
+	      .background(Color.secondary.opacity(0.05))
+	      .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+	      .overlay(
+	        RoundedRectangle(cornerRadius: 12, style: .continuous)
+	          .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+	      )
+	      .padding(.vertical, 6)
+	    }
+
+	    private struct ScreenshotBlock: View {
+	      @EnvironmentObject private var store: ConsoleStore
+	      let step: Int
+	      @State private var isViewing = false
+	      @State private var presentedImage: PlatformImage?
+	      @State private var presentedAnnotation: ActionAnnotation?
+
+	      var body: some View {
+	        Group {
+	          if let img = store.stepScreenshots[step] {
+	            Button {
+	              presentedImage = img
+	              presentedAnnotation = store.annotateStepScreenshots ? store.stepActionAnnotations[step] : nil
+	              isViewing = true
+	            } label: {
+	              AnnotatedScreenshotCard(
+	                image: img,
+	                annotation: store.annotateStepScreenshots ? store.stepActionAnnotations[step] : nil
+	              )
+	            }
+	            .buttonStyle(.plain)
+	            .sheet(isPresented: $isViewing) {
+	              if let presentedImage {
+	                ScreenshotViewer(image: presentedImage, annotation: presentedAnnotation)
+	              }
+	            }
+	          } else if let err = store.stepScreenshotErrors[step], !err.isEmpty {
+	            HStack(alignment: .top, spacing: 10) {
+	              Text(err)
+                .font(.footnote)
+                .foregroundStyle(.red)
+              Spacer()
+              Button("Retry") {
+                Task { await store.ensureStepScreenshotLoaded(step: step) }
+              }
+            }
+          } else {
+            HStack(spacing: 10) {
+              ProgressView()
+              Text("Loading screenshot…")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+              Spacer()
+            }
+            .task {
+              await store.ensureStepScreenshotLoaded(step: step)
+	          }
+	        }
+	      }
+	    }
+
+	    private struct ScreenshotViewer: View {
+	      @Environment(\.dismiss) private var dismiss
+	      let image: PlatformImage
+	      let annotation: ActionAnnotation?
+
+	      var body: some View {
+	        NavigationStack {
+	          ScrollView {
+	            AnnotatedScreenshotCard(image: image, annotation: annotation)
+	              .padding(16)
+	          }
+	          .navigationTitle(NSLocalizedString("Screenshot", comment: ""))
+	          .toolbar {
+	            ToolbarItem(placement: .primaryAction) {
+	              Button("Done") { dismiss() }
+	            }
+	          }
+	        }
+	      }
+	    }
+    }
+
+    private struct AttemptBlock: View {
+      let step: Int
+      let attempt: Int
+      let items: [AgentChatItem]
+
+      private var req: AgentChatItem? {
+        items.first { $0.kind == "request" && $0.attempt == attempt }
+      }
+
+      private var resp: AgentChatItem? {
+        items.last { $0.kind == "response" && $0.attempt == attempt }
+      }
+
+      var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+          Text(String(format: NSLocalizedString("(attempt %d)", comment: ""), attempt))
+            .font(.headline)
+            .foregroundStyle(.primary)
+
+          if let text = req?.text, !text.isEmpty {
+            LabeledCodeBlock(title: "Repair prompt", text: text, style: .monospaceFootnote)
+          }
+          if let content = resp?.content, !content.isEmpty {
+            LabeledCodeBlock(title: "Repair output", text: ChatView.prettyPrintedJSONIfPossible(content), style: .monospaceFootnote)
+          }
+          if let reasoning = resp?.reasoning, !reasoning.isEmpty {
+            DisclosureGroup("Reasoning") {
+              Text(reasoning)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(.top, 4)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      }
+    }
+
+    private enum CodeStyle {
+      case body
+      case monospaceFootnote
+    }
+
+	    private struct LabeledCodeBlock: View {
+	      let title: LocalizedStringKey
+	      let text: String
+	      let style: CodeStyle
+
+	      var body: some View {
+	        VStack(alignment: .leading, spacing: 6) {
+	          Text(title)
+	            .font(.caption)
+	            .foregroundStyle(.secondary)
+
+	          Group {
+	            if style == .monospaceFootnote {
+	              ScrollView(.horizontal) {
+	                Text(text)
+	                  .font(font)
+	                  .foregroundStyle(foreground)
+	                  .textSelection(.enabled)
+	                  .padding(10)
+	              }
+	              .frame(maxWidth: .infinity, alignment: .leading)
+	            } else {
+	              Text(text)
+	                .font(font)
+	                .foregroundStyle(foreground)
+	                .textSelection(.enabled)
+	                .padding(10)
+	                .frame(maxWidth: .infinity, alignment: .leading)
+	            }
+	          }
+	          .background(Color.secondary.opacity(0.06))
+	          .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+	        }
+	      }
+
+      private var font: Font {
+        switch style {
+        case .body:
+          return .body
+        case .monospaceFootnote:
+          return .system(.footnote, design: .monospaced)
+        }
+      }
+
+      private var foreground: Color {
+        switch style {
+        case .body:
+          return .primary
+        case .monospaceFootnote:
+          return .secondary
+        }
+      }
+    }
+  }
 
   var body: some View {
     NavigationStack {
@@ -1205,74 +2213,52 @@ private struct ChatView: View {
             )
             .padding(.horizontal, 20)
           } else {
-            List(store.chatItems) { item in
-              VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                  Text(String(format: NSLocalizedString("Step %d · %@", comment: ""), item.step ?? 0, item.kind))
-                    .font(.headline)
-                  if let attempt = item.attempt {
-                    Text("(\(attempt))").foregroundStyle(.secondary)
-                  }
-                  Spacer()
-                  if let ts = item.ts {
-                    Text(ts).font(.caption).foregroundStyle(.secondary)
-                  }
-                }
+            if store.chatMode == .visual {
+              ScrollViewReader { proxy in
+                VStack(spacing: 0) {
+                  LiveProgressPanel(
+                    progress: store.liveProgress,
+                    onJumpToStep: {
+                      guard let step = store.liveProgress.step else { return }
+                      withAnimation {
+                        proxy.scrollTo(step, anchor: .top)
+                      }
+                    }
+                  )
+                  .padding(.horizontal, 16)
 
-                if store.chatMode == .rawJSON {
+                  List(stepGroups) { group in
+                    StepCard(group: group)
+                      .id(group.step)
+                      .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                      .listRowSeparator(.hidden)
+                      .listRowBackground(Color.clear)
+                  }
+                  .listStyle(.plain)
+                }
+              }
+            } else {
+              List(store.chatItems) { item in
+                VStack(alignment: .leading, spacing: 6) {
+                  HStack {
+                    Text(String(format: NSLocalizedString("Step %d · %@", comment: ""), item.step ?? 0, item.kind))
+                      .font(.headline)
+                    if let attempt = item.attempt {
+                      Text(String(format: NSLocalizedString("(attempt %d)", comment: ""), attempt))
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let ts = item.ts {
+                      Text(ts).font(.caption).foregroundStyle(.secondary)
+                    }
+                  }
+
                   Text(redactSensitiveText(item.raw ?? ""))
                     .font(.system(.footnote, design: .monospaced))
                     .textSelection(.enabled)
-                } else {
-                  if item.kind == "request", item.attempt == nil, let step = item.step {
-                    if let img = store.stepScreenshots[step] {
-                      AnnotatedScreenshotCard(
-                        image: img,
-                        annotation: store.annotateStepScreenshots ? store.stepActionAnnotations[step] : nil
-                      )
-                    } else if let err = store.stepScreenshotErrors[step], !err.isEmpty {
-                      HStack(alignment: .top, spacing: 10) {
-                        Text(err)
-                          .font(.footnote)
-                          .foregroundStyle(.red)
-                        Spacer()
-                        Button("Retry") {
-                          Task { await store.ensureStepScreenshotLoaded(step: step) }
-                        }
-                      }
-                    } else {
-                      HStack(spacing: 10) {
-                        ProgressView()
-                        Text("Loading screenshot…")
-                          .font(.footnote)
-                          .foregroundStyle(.secondary)
-                        Spacer()
-                      }
-                      .task {
-                        await store.ensureStepScreenshotLoaded(step: step)
-                      }
-                    }
-                  }
-                  if let text = item.text, !text.isEmpty {
-                    Text(text)
-                      .font(.system(.footnote, design: .monospaced))
-                      .textSelection(.enabled)
-                  }
-                  if let content = item.content, !content.isEmpty {
-                    Text(content)
-                      .font(.system(.footnote, design: .monospaced))
-                      .textSelection(.enabled)
-                  }
-                  if let reasoning = item.reasoning, !reasoning.isEmpty {
-                    Divider()
-                    Text(reasoning)
-                      .font(.footnote)
-                      .foregroundStyle(.secondary)
-                      .textSelection(.enabled)
-                  }
                 }
+                .padding(.vertical, 4)
               }
-              .padding(.vertical, 4)
             }
           }
         }
@@ -1290,8 +2276,8 @@ private struct ChatView: View {
             }
           }
         }
-        }
         .navigationTitle("Chat")
+      }
     }
     .sheet(isPresented: $isSharing) {
       if let url = shareURL {
@@ -1320,8 +2306,8 @@ private struct ChatView: View {
         .padding()
         #endif
       }
-      }
     }
+  }
 
     private enum ChatExportFormat {
       case messageText
@@ -1367,18 +2353,19 @@ private struct ChatView: View {
 
     private func exportChatMessageText() -> String {
       var out: [String] = []
-    for item in store.chatItems {
-      out.append(exportHeader(for: item))
-      if let text = item.text, !text.isEmpty { out.append(text) }
-      if let content = item.content, !content.isEmpty { out.append(content) }
-      if let reasoning = item.reasoning, !reasoning.isEmpty {
-        out.append("\n--- reasoning ---\n")
-        out.append(reasoning)
+      let reasoningLabel = NSLocalizedString("Reasoning", comment: "")
+      for item in store.chatItems {
+        out.append(exportHeader(for: item))
+        if let text = item.text, !text.isEmpty { out.append(text) }
+        if let content = item.content, !content.isEmpty { out.append(Self.prettyPrintedJSONIfPossible(content)) }
+        if let reasoning = item.reasoning, !reasoning.isEmpty {
+          out.append("\n--- \(reasoningLabel) ---\n")
+          out.append(reasoning)
+        }
+        out.append("\n")
       }
-      out.append("\n")
+      return out.joined(separator: "\n")
     }
-    return out.joined(separator: "\n")
-  }
 
   private func exportChatRawJSONL() -> String {
     var lines: [String] = []
@@ -1618,67 +2605,67 @@ private struct NotesView: View {
   }
 }
 
-private struct TextEditorSheet: View {
-  let title: LocalizedStringKey
-  @Binding var text: String
-  @Environment(\.dismiss) private var dismiss
+	private struct TextEditorSheet: View {
+	  let title: LocalizedStringKey
+	  @Binding var text: String
+	  @Environment(\.dismiss) private var dismiss
 
-  var body: some View {
-    NavigationStack {
-      TextEditor(text: $text)
-        .font(.system(.body, design: .monospaced))
-        .padding(.horizontal, 8)
-        .navigationTitle(title)
-        .toolbar {
-          ToolbarItem(placement: .confirmationAction) {
-            Button("Done") { dismiss() }
-          }
-        }
-    }
-  }
-}
+	  var body: some View {
+	    NavigationStack {
+	      TextEditor(text: $text)
+	        .font(.system(.body, design: .monospaced))
+	        .padding(.horizontal, 8)
+	        .navigationTitle(title)
+	        .toolbar {
+	          ToolbarItem(placement: .confirmationAction) {
+	            Button("Done") { dismiss() }
+	          }
+	        }
+	    }
+	  }
+	}
 
-private struct SystemPromptEditorSheet: View {
-  let title: LocalizedStringKey
-  @Binding var systemPrompt: String
-  let defaultTemplate: String
-  @Environment(\.dismiss) private var dismiss
+	private struct SystemPromptEditorSheet: View {
+	  let title: LocalizedStringKey
+	  @Binding var systemPrompt: String
+	  let defaultTemplate: String
+	  @Environment(\.dismiss) private var dismiss
 
-  @State private var draft: String = ""
+	  @State private var draft: String = ""
 
-  var body: some View {
-    NavigationStack {
-      TextEditor(text: $draft)
-        .font(.system(.body, design: .monospaced))
-        .padding(.horizontal, 8)
-        .navigationTitle(title)
-        .onAppear {
-          if draft.isEmpty {
-            draft = systemPrompt.isEmpty ? defaultTemplate : systemPrompt
-          }
-        }
-        .toolbar {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Restore Default Template") {
-              draft = defaultTemplate
-            }
-          }
-          ToolbarItem(placement: .confirmationAction) {
-            Button("Done") {
-              // If the user never had a custom prompt and didn't change the default template,
-              // keep systemPrompt empty to avoid persisting the built-in template as "custom".
-              if draft == defaultTemplate {
-                systemPrompt = ""
-              } else {
-                systemPrompt = draft
-              }
-              dismiss()
-            }
-          }
-        }
-    }
-  }
-}
+	  var body: some View {
+	    NavigationStack {
+	      TextEditor(text: $draft)
+	        .font(.system(.body, design: .monospaced))
+	        .padding(.horizontal, 8)
+	        .navigationTitle(title)
+	        .onAppear {
+	          if draft.isEmpty {
+	            draft = systemPrompt.isEmpty ? defaultTemplate : systemPrompt
+	          }
+	        }
+	        .toolbar {
+	          ToolbarItem(placement: .cancellationAction) {
+	            Button("Restore Default Template") {
+	              draft = defaultTemplate
+	            }
+	          }
+	          ToolbarItem(placement: .confirmationAction) {
+	            Button("Done") {
+	              // If the user never had a custom prompt and didn't change the default template,
+	              // keep systemPrompt empty to avoid persisting the built-in template as "custom".
+	              if draft == defaultTemplate {
+	                systemPrompt = ""
+	              } else {
+	                systemPrompt = draft
+	              }
+	              dismiss()
+	            }
+	          }
+	        }
+	    }
+	  }
+	}
 
 // MARK: - QR Import
 

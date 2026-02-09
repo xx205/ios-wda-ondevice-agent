@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/run_wda_preinstalled_devicectl.sh start --device <UDID|name> --bundle-id <xctrunner-bundle-id> [--wda-url <url>] [--port 8100]
+  bash scripts/run_wda_preinstalled_devicectl.sh start --device <UDID|name> --bundle-id <xctrunner-bundle-id> [--wda-url <url>] [--port 8100] [--wait-unlock-seconds 300]
   bash scripts/run_wda_preinstalled_devicectl.sh stop  --device <UDID|name> --bundle-id <xctrunner-bundle-id>
 
 Examples:
@@ -23,6 +23,7 @@ Notes:
   - MUST use --no-activate when launching an .xctrunner, otherwise it can fail with:
       "Failed to background test runner within 30.0s."
   - This does not (re)install WDA. Install it once via Xcode first.
+  - If the device is locked, XCTest init can hang until you unlock; this script can wait/prompt via --wait-unlock-seconds.
 EOF
 }
 
@@ -33,6 +34,7 @@ device=""
 bundle_id=""
 wda_url=""
 port="8100"
+wait_unlock_seconds="300"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +46,8 @@ while [[ $# -gt 0 ]]; do
       wda_url="${2:-}"; shift 2 ;;
     --port)
       port="${2:-}"; shift 2 ;;
+    --wait-unlock-seconds)
+      wait_unlock_seconds="${2:-}"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -69,6 +73,94 @@ if ! command -v xcrun >/dev/null 2>&1; then
   echo "xcrun not found. Install Xcode Command Line Tools." >&2
   exit 1
 fi
+
+lock_state_snapshot() {
+  local device_arg="$1"
+  local tmp="/tmp/devicectl_lock_state_$$.json"
+  rm -f "$tmp" 2>/dev/null || true
+  if ! xcrun devicectl device info lockState --device "$device_arg" --json-output "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo ""
+    return 0
+  fi
+  cat "$tmp" 2>/dev/null || true
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+device_needs_unlock_best_effort() {
+  local device_arg="$1"
+  local json
+  json="$(lock_state_snapshot "$device_arg")"
+  if [[ -z "$json" ]]; then
+    return 2
+  fi
+  python3 - <<'PY' "$json"
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit(2)
+res = data.get("result") or {}
+# Best-effort: when locked, devicectl reports passcodeRequired=true.
+needs = bool(res.get("passcodeRequired"))
+print("1" if needs else "0")
+PY
+}
+
+print_lock_state_best_effort() {
+  local device_arg="$1"
+  local json
+  json="$(lock_state_snapshot "$device_arg")"
+  if [[ -z "$json" ]]; then
+    echo "Device lock state: unknown (devicectl lockState unavailable)"
+    return 0
+  fi
+  python3 - <<'PY' "$json"
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    print("Device lock state: unknown (bad json)")
+    raise SystemExit(0)
+res = data.get("result") or {}
+passcode_required = res.get("passcodeRequired")
+unlocked_since_boot = res.get("unlockedSinceBoot")
+print(f"Device lock state: passcodeRequired={passcode_required} unlockedSinceBoot={unlocked_since_boot}")
+PY
+}
+
+wait_for_device_unlock_best_effort() {
+  local device_arg="$1"
+  local timeout_s="$2"
+
+  if [[ -z "$timeout_s" || "$timeout_s" == "0" ]]; then
+    return 0
+  fi
+
+  local start_s
+  start_s="$(date +%s)"
+
+  while true; do
+    local needs
+    needs="$(device_needs_unlock_best_effort "$device_arg" || true)"
+    if [[ "$needs" == "0" ]]; then
+      return 0
+    fi
+
+    local now_s
+    now_s="$(date +%s)"
+    local elapsed_s=$(( now_s - start_s ))
+    if (( elapsed_s >= timeout_s )); then
+      echo "Device appears locked. Unlock your iPhone and re-run (or increase --wait-unlock-seconds)." >&2
+      return 1
+    fi
+
+    if (( elapsed_s % 5 == 0 )); then
+      echo "Device appears locked. Please unlock your iPhone to start WDA... (waiting up to ${timeout_s}s; Ctrl+C to abort)"
+    fi
+    sleep 0.5
+  done
+}
 
 wait_for_wda() {
   local url="$1"
@@ -128,6 +220,11 @@ PY
 
 case "$cmd" in
   start)
+    if [[ -n "$wait_unlock_seconds" && "$wait_unlock_seconds" != "0" ]]; then
+      print_lock_state_best_effort "$device"
+      # When the device is locked, WDA can hang during XCTest init until the user unlocks.
+      wait_for_device_unlock_best_effort "$device" "$wait_unlock_seconds"
+    fi
     echo "Launching $bundle_id via devicectl (no-activate) ..."
     xcrun devicectl device process launch \
       --device "$device" \
