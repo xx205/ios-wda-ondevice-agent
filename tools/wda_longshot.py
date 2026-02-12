@@ -7,6 +7,11 @@ try:
 except Exception as e:
     raise SystemExit('Pillow required: pip install pillow')
 
+try:
+    import numpy as np
+except Exception as e:
+    raise SystemExit("numpy required: pip install numpy")
+
 
 def jget(url: str, timeout=10):
     with urlopen(url, timeout=timeout) as r:
@@ -124,9 +129,6 @@ def best_overlap(prev: Image.Image, nxt: Image.Image, *, top_trim: int, bottom_t
 
     prev_arr = prev_use.tobytes()
     nxt_bytes = nxt_use.tobytes()
-
-    # Convert to memoryview for speed
-    import numpy as np
 
     pa = np.frombuffer(prev_arr, dtype=np.uint8).reshape(prev_use.size[1], prev_use.size[0])
     na = np.frombuffer(nxt_bytes, dtype=np.uint8).reshape(nxt_use.size[1], nxt_use.size[0])

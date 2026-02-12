@@ -2282,30 +2282,15 @@ static BOOL OnDeviceAgentIsLoopbackHost(NSString *host)
 
 static BOOL OnDeviceAgentIsLocalhostRequest(FBRouteRequest *request)
 {
-  NSString *hostHeader = OnDeviceAgentHeaderValueCaseInsensitive(request, @"Host");
-  NSString *h = OnDeviceAgentTrim(hostHeader);
-  if (h.length == 0) {
+  // IMPORTANT: do NOT trust the client-controlled "Host" header here.
+  // We need to know whether the TCP peer is loopback (127.0.0.1 / ::1).
+  // The web server injects this header based on the underlying socket peer address.
+  NSString *peer = OnDeviceAgentHeaderValueCaseInsensitive(request, @"X-OnDevice-Agent-Peer-IP");
+  if (peer.length == 0) {
+    // Fail closed: if we cannot determine the real peer, require Agent Token.
     return NO;
   }
-
-  // Strip port if present. Host header can be:
-  // - "127.0.0.1:8100"
-  // - "localhost:8100"
-  // - "[::1]:8100"
-  // - "::1"
-  if ([h hasPrefix:@"["]) {
-    NSRange end = [h rangeOfString:@"]"];
-    if (end.location != NSNotFound && end.location > 1) {
-      h = [h substringWithRange:NSMakeRange(1, end.location - 1)];
-    }
-  } else {
-    NSRange colon = [h rangeOfString:@":"];
-    if (colon.location != NSNotFound && colon.location > 0) {
-      h = [h substringToIndex:colon.location];
-    }
-  }
-
-  return OnDeviceAgentIsLoopbackHost(h);
+  return OnDeviceAgentIsLoopbackHost(peer);
 }
 
 static NSString *OnDeviceAgentQueryValueCaseInsensitive(NSURL *url, NSString *name)

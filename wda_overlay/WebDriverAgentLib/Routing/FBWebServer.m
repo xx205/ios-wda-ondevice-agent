@@ -197,11 +197,19 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
     for (FBRoute *route in routes) {
       [self.server handleMethod:route.verb withPath:route.path block:^(RouteRequest *request, RouteResponse *response) {
         NSDictionary *arguments = [NSJSONSerialization JSONObjectWithData:request.body options:NSJSONReadingMutableContainers error:NULL];
+        NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:request.headers ?: @{}];
+        if ([response.connection isKindOfClass:RoutingConnection.class]) {
+          NSString *peer = [((RoutingConnection *)response.connection) peerHost] ?: @"";
+          if (peer.length > 0) {
+            // Server-injected peer address (do not trust client "Host" header for auth decisions).
+            headers[@"X-OnDevice-Agent-Peer-IP"] = peer;
+          }
+        }
         FBRouteRequest *routeParams = [FBRouteRequest
           routeRequestWithURL:request.url
           parameters:request.params
           arguments:arguments ?: @{}
-          headers:request.headers ?: @{}
+          headers:headers
         ];
 
         [FBLogger verboseLog:routeParams.description];

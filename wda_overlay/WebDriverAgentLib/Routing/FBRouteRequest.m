@@ -28,11 +28,9 @@
 - (NSString *)description
 {
   return [NSString stringWithFormat:
-    @"Request URL %@ | Params %@ | Arguments %@ | Headers %@",
+    @"Request URL %@ | Params %@",
     self.URL,
-    self.parameters,
-    self.arguments,
-    self.headers
+    self.parameters
   ];
 }
 
