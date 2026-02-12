@@ -37,10 +37,10 @@ index c7938d5d..4f89ddcd 100644
  
  NS_ASSUME_NONNULL_END
 diff --git a/WebDriverAgentLib/Routing/FBRouteRequest.m b/WebDriverAgentLib/Routing/FBRouteRequest.m
-index b8656d28..6c9c067d 100644
+index b8656d28..a9c9e5fd 100644
 --- a/WebDriverAgentLib/Routing/FBRouteRequest.m
 +++ b/WebDriverAgentLib/Routing/FBRouteRequest.m
-@@ -11,21 +11,28 @@
+@@ -11,21 +11,26 @@
  @implementation FBRouteRequest
  
  + (instancetype)routeRequestWithURL:(NSURL *)URL parameters:(NSDictionary *)parameters arguments:(NSDictionary *)arguments
@@ -62,29 +62,70 @@ index b8656d28..6c9c067d 100644
  {
    return [NSString stringWithFormat:
 -    @"Request URL %@ | Params %@ | Arguments %@",
-+    @"Request URL %@ | Params %@ | Arguments %@ | Headers %@",
++    @"Request URL %@ | Params %@",
      self.URL,
-     self.parameters,
+-    self.parameters,
 -    self.arguments
-+    self.arguments,
-+    self.headers
++    self.parameters
    ];
  }
  
 diff --git a/WebDriverAgentLib/Routing/FBWebServer.m b/WebDriverAgentLib/Routing/FBWebServer.m
-index 0b82eaff..2e208d60 100644
+index 0b82eaff..9102d5cc 100644
 --- a/WebDriverAgentLib/Routing/FBWebServer.m
 +++ b/WebDriverAgentLib/Routing/FBWebServer.m
-@@ -201,6 +201,7 @@ - (void)registerRouteHandlers:(NSArray *)commandHandlerClasses
+@@ -197,10 +197,19 @@ - (void)registerRouteHandlers:(NSArray *)commandHandlerClasses
+     for (FBRoute *route in routes) {
+       [self.server handleMethod:route.verb withPath:route.path block:^(RouteRequest *request, RouteResponse *response) {
+         NSDictionary *arguments = [NSJSONSerialization JSONObjectWithData:request.body options:NSJSONReadingMutableContainers error:NULL];
++        NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:request.headers ?: @{}];
++        if ([response.connection isKindOfClass:RoutingConnection.class]) {
++          NSString *peer = [((RoutingConnection *)response.connection) peerHost] ?: @"";
++          if (peer.length > 0) {
++            // Server-injected peer address (do not trust client "Host" header for auth decisions).
++            headers[@"X-OnDevice-Agent-Peer-IP"] = peer;
++          }
++        }
+         FBRouteRequest *routeParams = [FBRouteRequest
            routeRequestWithURL:request.url
            parameters:request.params
            arguments:arguments ?: @{}
-+          headers:request.headers ?: @{}
++          headers:headers
          ];
  
          [FBLogger verboseLog:routeParams.description];
+diff --git a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h b/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h
+index 1f6cd27d..a6764a95 100644
+--- a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h
++++ b/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h
+@@ -2,4 +2,5 @@
+ #import "HTTPConnection.h"
+ 
+ @interface RoutingConnection : HTTPConnection
++- (NSString *)peerHost;
+ @end
+diff --git a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m b/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m
+index 3eee1926..cd23fc23 100644
+--- a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m
++++ b/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m
+@@ -139,4 +139,15 @@ - (BOOL)shouldDie {
+   return shouldDie;
+ }
+ 
++- (NSString *)peerHost
++{
++  NSString *host = asyncSocket.connectedHost ?: @"";
++  if (host.length > 0) {
++    return host;
++  }
++  NSData *addr = asyncSocket.connectedAddress;
++  NSString *fallback = addr ? [GCDAsyncSocket hostFromAddress:addr] : nil;
++  return fallback ?: @"";
++}
++
+ @end
 diff --git a/WebDriverAgentRunner/UITestingUITests.m b/WebDriverAgentRunner/UITestingUITests.m
-index ad2ff455..a9d55b66 100644
+index ad2ff455..113728d7 100644
 --- a/WebDriverAgentRunner/UITestingUITests.m
 +++ b/WebDriverAgentRunner/UITestingUITests.m
 @@ -2,11 +2,15 @@
@@ -105,7 +146,7 @@ index ad2ff455..a9d55b66 100644
  
  #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
  #import <WebDriverAgentLib/FBConfiguration.h>
-@@ -14,6 +18,5932 @@
+@@ -14,6 +18,5917 @@
  #import <WebDriverAgentLib/FBWebServer.h>
  #import <WebDriverAgentLib/XCTestCase.h>
  
@@ -2373,30 +2414,15 @@ index ad2ff455..a9d55b66 100644
 +
 +static BOOL OnDeviceAgentIsLocalhostRequest(FBRouteRequest *request)
 +{
-+  NSString *hostHeader = OnDeviceAgentHeaderValueCaseInsensitive(request, @"Host");
-+  NSString *h = OnDeviceAgentTrim(hostHeader);
-+  if (h.length == 0) {
++  // IMPORTANT: do NOT trust the client-controlled "Host" header here.
++  // We need to know whether the TCP peer is loopback (127.0.0.1 / ::1).
++  // The web server injects this header based on the underlying socket peer address.
++  NSString *peer = OnDeviceAgentHeaderValueCaseInsensitive(request, @"X-OnDevice-Agent-Peer-IP");
++  if (peer.length == 0) {
++    // Fail closed: if we cannot determine the real peer, require Agent Token.
 +    return NO;
 +  }
-+
-+  // Strip port if present. Host header can be:
-+  // - "127.0.0.1:8100"
-+  // - "localhost:8100"
-+  // - "[::1]:8100"
-+  // - "::1"
-+  if ([h hasPrefix:@"["]) {
-+    NSRange end = [h rangeOfString:@"]"];
-+    if (end.location != NSNotFound && end.location > 1) {
-+      h = [h substringWithRange:NSMakeRange(1, end.location - 1)];
-+    }
-+  } else {
-+    NSRange colon = [h rangeOfString:@":"];
-+    if (colon.location != NSNotFound && colon.location > 0) {
-+      h = [h substringToIndex:colon.location];
-+    }
-+  }
-+
-+  return OnDeviceAgentIsLoopbackHost(h);
++  return OnDeviceAgentIsLoopbackHost(peer);
 +}
 +
 +static NSString *OnDeviceAgentQueryValueCaseInsensitive(NSURL *url, NSString *name)
@@ -6038,7 +6064,7 @@ index ad2ff455..a9d55b66 100644
  @interface UITestingUITests : FBFailureProofTestCase <FBWebServerDelegate>
  @end
  
-@@ -35,6 +5965,8 @@ + (void)setUp
+@@ -35,6 +5950,8 @@ + (void)setUp
    } else {
      [FBConfiguration disableScreenshots];
    }

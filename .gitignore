@@ -5,6 +5,7 @@
 *.log
 *.xcuserstate
 **/xcuserdata/
+__pycache__/
 
 # Local build / output
 **/build/

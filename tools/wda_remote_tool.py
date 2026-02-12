@@ -615,7 +615,7 @@ def run_live_server(*, base_url: str, host: str, port: int, timeout: float, poll
                             _send_json(self, {"ok": False, "error": "Missing query parameter: step"}, status=400)
                             return
                         target = f"/agent/step_screenshot?step={urllib.parse.quote(str(step))}"
-                    data = unwrap_wda_value(api_get(base_url, target[len("/agent") :], timeout))
+                    data = unwrap_wda_value(api_get(base_url, target, timeout))
                     _send_json(self, data)
                     return
 
@@ -663,7 +663,7 @@ def run_live_server(*, base_url: str, host: str, port: int, timeout: float, poll
                 }:
                     _send_json(self, {"ok": False, "error": "Unsupported endpoint"}, status=404)
                     return
-                data = unwrap_wda_value(api_post(base_url, target[len("/agent") :], payload, timeout))
+                data = unwrap_wda_value(api_post(base_url, target, payload, timeout))
                 _send_json(self, data)
             except Exception as e:  # noqa: BLE001
                 _send_json(self, {"ok": False, "error": str(e)}, status=500)

@@ -141,8 +141,14 @@ wait_for_device_unlock_best_effort() {
   start_s="$(date +%s)"
 
   while true; do
-    local needs
-    needs="$(device_needs_unlock_best_effort "$device_arg" || true)"
+    local needs rc
+    needs=""
+    rc=0
+    needs="$(device_needs_unlock_best_effort "$device_arg")" || rc=$?
+    # Best-effort: if lockState is unavailable/unknown, do NOT block startup.
+    if [[ "$rc" -ne 0 || -z "$needs" ]]; then
+      return 0
+    fi
     if [[ "$needs" == "0" ]]; then
       return 0
     fi
