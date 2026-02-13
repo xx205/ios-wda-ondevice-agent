@@ -29,6 +29,9 @@ NS_ASSUME_NONNULL_BEGIN
 /*! Raw HTTP headers of that request */
 @property (nonatomic, copy, readonly) NSDictionary *headers;
 
+/*! TCP peer IP address (server-provided; do not trust any HTTP header for this). */
+@property (nonatomic, copy, readonly) NSString *peerIP;
+
 /*! Session associated with that request */
 @property (nonatomic, strong, readonly) FBSession *session;
 

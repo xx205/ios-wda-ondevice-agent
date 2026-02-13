@@ -1,30 +1,34 @@
 diff --git a/WebDriverAgentLib/Routing/FBRouteRequest-Private.h b/WebDriverAgentLib/Routing/FBRouteRequest-Private.h
-index 7144bd80..fc0a3355 100644
+index 7144bd80..0c75525e 100644
 --- a/WebDriverAgentLib/Routing/FBRouteRequest-Private.h
 +++ b/WebDriverAgentLib/Routing/FBRouteRequest-Private.h
-@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
+@@ -14,6 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
  @property (nonatomic, strong, readwrite) NSURL *URL;
  @property (nonatomic, copy, readwrite) NSDictionary *parameters;
  @property (nonatomic, copy, readwrite) NSDictionary *arguments;
 +@property (nonatomic, copy, readwrite) NSDictionary *headers;
++@property (nonatomic, copy, readwrite) NSString *peerIP;
  @property (nonatomic, strong, readwrite) FBSession *session;
  @end
  
 diff --git a/WebDriverAgentLib/Routing/FBRouteRequest.h b/WebDriverAgentLib/Routing/FBRouteRequest.h
-index c7938d5d..4f89ddcd 100644
+index c7938d5d..53540581 100644
 --- a/WebDriverAgentLib/Routing/FBRouteRequest.h
 +++ b/WebDriverAgentLib/Routing/FBRouteRequest.h
-@@ -26,6 +26,9 @@ NS_ASSUME_NONNULL_BEGIN
+@@ -26,6 +26,12 @@ NS_ASSUME_NONNULL_BEGIN
  /*! Arguments sent with that request */
  @property (nonatomic, copy, readonly) NSDictionary *arguments;
  
 +/*! Raw HTTP headers of that request */
 +@property (nonatomic, copy, readonly) NSDictionary *headers;
 +
++/*! TCP peer IP address (server-provided; do not trust any HTTP header for this). */
++@property (nonatomic, copy, readonly) NSString *peerIP;
++
  /*! Session associated with that request */
  @property (nonatomic, strong, readonly) FBSession *session;
  
-@@ -34,6 +37,11 @@ NS_ASSUME_NONNULL_BEGIN
+@@ -34,6 +40,11 @@ NS_ASSUME_NONNULL_BEGIN
   */
  + (instancetype)routeRequestWithURL:(NSURL *)URL parameters:(NSDictionary *)parameters arguments:(NSDictionary *)arguments;
  
@@ -37,10 +41,10 @@ index c7938d5d..4f89ddcd 100644
  
  NS_ASSUME_NONNULL_END
 diff --git a/WebDriverAgentLib/Routing/FBRouteRequest.m b/WebDriverAgentLib/Routing/FBRouteRequest.m
-index b8656d28..a9c9e5fd 100644
+index b8656d28..b32f7b7d 100644
 --- a/WebDriverAgentLib/Routing/FBRouteRequest.m
 +++ b/WebDriverAgentLib/Routing/FBRouteRequest.m
-@@ -11,21 +11,26 @@
+@@ -11,21 +11,27 @@
  @implementation FBRouteRequest
  
  + (instancetype)routeRequestWithURL:(NSURL *)URL parameters:(NSDictionary *)parameters arguments:(NSDictionary *)arguments
@@ -55,6 +59,7 @@ index b8656d28..a9c9e5fd 100644
    request.parameters = parameters;
    request.arguments = arguments;
 +  request.headers = headers ?: @{};
++  request.peerIP = @"";
    return request;
  }
  
@@ -71,29 +76,31 @@ index b8656d28..a9c9e5fd 100644
  }
  
 diff --git a/WebDriverAgentLib/Routing/FBWebServer.m b/WebDriverAgentLib/Routing/FBWebServer.m
-index 0b82eaff..9102d5cc 100644
+index 0b82eaff..70bf31d7 100644
 --- a/WebDriverAgentLib/Routing/FBWebServer.m
 +++ b/WebDriverAgentLib/Routing/FBWebServer.m
-@@ -197,10 +197,19 @@ - (void)registerRouteHandlers:(NSArray *)commandHandlerClasses
-     for (FBRoute *route in routes) {
-       [self.server handleMethod:route.verb withPath:route.path block:^(RouteRequest *request, RouteResponse *response) {
-         NSDictionary *arguments = [NSJSONSerialization JSONObjectWithData:request.body options:NSJSONReadingMutableContainers error:NULL];
-+        NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:request.headers ?: @{}];
-+        if ([response.connection isKindOfClass:RoutingConnection.class]) {
-+          NSString *peer = [((RoutingConnection *)response.connection) peerHost] ?: @"";
-+          if (peer.length > 0) {
-+            // Server-injected peer address (do not trust client "Host" header for auth decisions).
-+            headers[@"X-OnDevice-Agent-Peer-IP"] = peer;
-+          }
-+        }
-         FBRouteRequest *routeParams = [FBRouteRequest
+@@ -15,7 +15,7 @@
+ #import "FBErrorBuilder.h"
+ #import "FBExceptionHandler.h"
+ #import "FBMjpegServer.h"
+-#import "FBRouteRequest.h"
++#import "FBRouteRequest-Private.h"
+ #import "FBRuntimeUtils.h"
+ #import "FBSession.h"
+ #import "FBTCPSocket.h"
+@@ -201,7 +201,12 @@ - (void)registerRouteHandlers:(NSArray *)commandHandlerClasses
            routeRequestWithURL:request.url
            parameters:request.params
            arguments:arguments ?: @{}
-+          headers:headers
++          headers:request.headers ?: @{}
          ];
++        if ([response.connection isKindOfClass:RoutingConnection.class]) {
++          // Peer IP is derived from the TCP connection and must not be sourced from any HTTP header.
++          routeParams.peerIP = [((RoutingConnection *)response.connection) peerHost] ?: @"";
++        }
  
          [FBLogger verboseLog:routeParams.description];
+ 
 diff --git a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h b/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h
 index 1f6cd27d..a6764a95 100644
 --- a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.h
@@ -125,7 +132,7 @@ index 3eee1926..cd23fc23 100644
 +
  @end
 diff --git a/WebDriverAgentRunner/UITestingUITests.m b/WebDriverAgentRunner/UITestingUITests.m
-index ad2ff455..113728d7 100644
+index ad2ff455..7e078ac0 100644
 --- a/WebDriverAgentRunner/UITestingUITests.m
 +++ b/WebDriverAgentRunner/UITestingUITests.m
 @@ -2,11 +2,15 @@
@@ -146,7 +153,7 @@ index ad2ff455..113728d7 100644
  
  #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
  #import <WebDriverAgentLib/FBConfiguration.h>
-@@ -14,6 +18,5917 @@
+@@ -14,6 +18,5916 @@
  #import <WebDriverAgentLib/FBWebServer.h>
  #import <WebDriverAgentLib/XCTestCase.h>
  
@@ -2416,8 +2423,7 @@ index ad2ff455..113728d7 100644
 +{
 +  // IMPORTANT: do NOT trust the client-controlled "Host" header here.
 +  // We need to know whether the TCP peer is loopback (127.0.0.1 / ::1).
-+  // The web server injects this header based on the underlying socket peer address.
-+  NSString *peer = OnDeviceAgentHeaderValueCaseInsensitive(request, @"X-OnDevice-Agent-Peer-IP");
++  NSString *peer = OnDeviceAgentTrim(request.peerIP ?: @"");
 +  if (peer.length == 0) {
 +    // Fail closed: if we cannot determine the real peer, require Agent Token.
 +    return NO;
@@ -6064,7 +6070,7 @@ index ad2ff455..113728d7 100644
  @interface UITestingUITests : FBFailureProofTestCase <FBWebServerDelegate>
  @end
  
-@@ -35,6 +5950,8 @@ + (void)setUp
+@@ -35,6 +5949,8 @@ + (void)setUp
    } else {
      [FBConfiguration disableScreenshots];
    }
