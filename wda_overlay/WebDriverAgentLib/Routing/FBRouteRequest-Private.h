@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readwrite) NSDictionary *parameters;
 @property (nonatomic, copy, readwrite) NSDictionary *arguments;
 @property (nonatomic, copy, readwrite) NSDictionary *headers;
+@property (nonatomic, copy, readwrite) NSString *peerIP;
 @property (nonatomic, strong, readwrite) FBSession *session;
 @end
 

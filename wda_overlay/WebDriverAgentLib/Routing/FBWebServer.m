@@ -15,7 +15,7 @@
 #import "FBErrorBuilder.h"
 #import "FBExceptionHandler.h"
 #import "FBMjpegServer.h"
-#import "FBRouteRequest.h"
+#import "FBRouteRequest-Private.h"
 #import "FBRuntimeUtils.h"
 #import "FBSession.h"
 #import "FBTCPSocket.h"
@@ -197,20 +197,16 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
     for (FBRoute *route in routes) {
       [self.server handleMethod:route.verb withPath:route.path block:^(RouteRequest *request, RouteResponse *response) {
         NSDictionary *arguments = [NSJSONSerialization JSONObjectWithData:request.body options:NSJSONReadingMutableContainers error:NULL];
-        NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:request.headers ?: @{}];
-        if ([response.connection isKindOfClass:RoutingConnection.class]) {
-          NSString *peer = [((RoutingConnection *)response.connection) peerHost] ?: @"";
-          if (peer.length > 0) {
-            // Server-injected peer address (do not trust client "Host" header for auth decisions).
-            headers[@"X-OnDevice-Agent-Peer-IP"] = peer;
-          }
-        }
         FBRouteRequest *routeParams = [FBRouteRequest
           routeRequestWithURL:request.url
           parameters:request.params
           arguments:arguments ?: @{}
-          headers:headers
+          headers:request.headers ?: @{}
         ];
+        if ([response.connection isKindOfClass:RoutingConnection.class]) {
+          // Peer IP is derived from the TCP connection and must not be sourced from any HTTP header.
+          routeParams.peerIP = [((RoutingConnection *)response.connection) peerHost] ?: @"";
+        }
 
         [FBLogger verboseLog:routeParams.description];
 

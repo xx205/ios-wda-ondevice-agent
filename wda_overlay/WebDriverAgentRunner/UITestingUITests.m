@@ -2284,8 +2284,7 @@ static BOOL OnDeviceAgentIsLocalhostRequest(FBRouteRequest *request)
 {
   // IMPORTANT: do NOT trust the client-controlled "Host" header here.
   // We need to know whether the TCP peer is loopback (127.0.0.1 / ::1).
-  // The web server injects this header based on the underlying socket peer address.
-  NSString *peer = OnDeviceAgentHeaderValueCaseInsensitive(request, @"X-OnDevice-Agent-Peer-IP");
+  NSString *peer = OnDeviceAgentTrim(request.peerIP ?: @"");
   if (peer.length == 0) {
     // Fail closed: if we cannot determine the real peer, require Agent Token.
     return NO;

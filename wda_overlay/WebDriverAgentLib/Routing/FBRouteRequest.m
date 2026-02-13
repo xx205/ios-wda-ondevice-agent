@@ -22,6 +22,7 @@
   request.parameters = parameters;
   request.arguments = arguments;
   request.headers = headers ?: @{};
+  request.peerIP = @"";
   return request;
 }
 
