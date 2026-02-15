@@ -144,10 +144,31 @@ bash scripts/install_wda_prepared_runner.sh --device <UDID>
 
 ---
 
-## 安全提醒（务必读）
+## Disclaimer / 免责声明
 
-- WDA 本身就是“远程控制手机”的能力：如果你的 `8100` 端口对局域网开放，任何能访问到的人都能操作你的手机。
-- `/agent` 页面里会需要输入 `API key`。请不要把包含 key 的截图/日志直接贴公开论坛；必要时务必打码。
+### 中文
+
+本项目提供基于 WebDriverAgent（WDA）的 iOS UI 自动化能力，仅用于学习、研究与开发测试。
+
+使用前请注意：
+
+- 授权与合规：仅在你拥有或已获明确授权的设备、账号与应用上使用。对第三方 App 的自动化操作可能违反其服务条款或当地法规，后果由你自行承担。
+- 风险操作：自动化可能发生误触/误输入，导致数据修改、信息泄露、下单/支付等不可逆操作。涉及资金、隐私或重要账号（如银行/支付/企业管理后台）请谨慎使用，并优先启用人工确认/接管流程。
+- 安全：不要将 WDA/Runner 的端口（默认 8100）暴露到公网。若启用了局域网访问，请启用并妥善保管 Agent Token。在不可信网络中不要开启“跳过 TLS 校验”，否则 API 密钥可能遭中间人攻击泄露。
+- 隐私：运行过程中可能产生屏幕截图、日志与导出报告，其中可能包含敏感信息。分享或提交 issue 前请自行脱敏与清理。
+- 无担保：本项目按“原样（AS IS）”提供，不对任何直接或间接损失负责。你使用本项目即表示理解并接受上述风险。
+
+### English
+
+This project provides iOS UI automation based on WebDriverAgent (WDA) for learning, research, and development/testing purposes only.
+
+Please read before use:
+
+- Authorization & compliance: Use only on devices, accounts, and apps you own or are explicitly authorized to access. Automating third‑party apps may violate their Terms of Service and/or local laws. You are solely responsible for any consequences.
+- Risky actions: Automation can mis-click or mis-type, potentially causing irreversible actions such as data modification, information disclosure, ordering, or payments. Be extra cautious with financial/privacy‑sensitive apps (e.g., banking/payment/admin consoles) and prefer human confirmation/takeover.
+- Security: Do not expose the WDA/Runner port (default 8100) to the public Internet. If LAN access is enabled, use and protect an Agent Token. Do not enable “skip TLS verification” on untrusted networks, or your API key may be exposed to MITM attacks.
+- Privacy: Screenshots, logs, and exported reports may contain sensitive data. Redact and clean them before sharing or filing issues.
+- No warranty: This project is provided “AS IS”, without warranties of any kind, and the authors are not liable for any damages. By using this project, you acknowledge and accept these risks.
 
 ---
 
