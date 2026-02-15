@@ -1217,6 +1217,9 @@ final class ConsoleStore: ObservableObject {
 
   func resetRuntime() async {
     stateGeneration &+= 1
+    // "Reset Runtime" should clear all runtime artifacts visible in Logs/Chat/Notes.
+    logs.removeAll()
+    chatItems.removeAll()
     stepScreenshots.removeAll()
     stepScreenshotErrors.removeAll()
     stepScreenshotLoading.removeAll()
