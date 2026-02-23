@@ -2265,7 +2265,7 @@ private struct ChatView: View {
                     }
                   }
 
-                  Text(redactSensitiveText(item.raw ?? ""))
+                  Text(ConsoleRedaction.redactSensitiveText(item.raw ?? ""))
                     .font(.system(.footnote, design: .monospaced))
                     .textSelection(.enabled)
                 }
@@ -2389,7 +2389,7 @@ private struct ChatView: View {
       if let ts = item.ts, !ts.isEmpty { obj["ts"] = ts }
       if let step = item.step { obj["step"] = step }
       if let attempt = item.attempt { obj["attempt"] = attempt }
-      if let raw = item.raw, !raw.isEmpty { obj["raw"] = redactSensitiveText(raw) }
+      if let raw = item.raw, !raw.isEmpty { obj["raw"] = ConsoleRedaction.redactSensitiveText(raw) }
       if let text = item.text, !text.isEmpty { obj["text"] = text }
       if let content = item.content, !content.isEmpty { obj["content"] = content }
       if let reasoning = item.reasoning, !reasoning.isEmpty { obj["reasoning"] = reasoning }
@@ -2495,7 +2495,7 @@ private struct ChatView: View {
           ts: it.ts ?? "",
           step: it.step ?? 0,
           attempt: it.attempt,
-          raw: redactSensitiveText(it.raw ?? ""),
+          raw: ConsoleRedaction.redactSensitiveText(it.raw ?? ""),
           text: it.text ?? "",
           content: it.content ?? "",
           reasoning: it.reasoning ?? ""
@@ -2551,34 +2551,6 @@ private struct ChatView: View {
       )
     }
 
-    private func redactSensitiveText(_ text: String) -> String {
-      if text.isEmpty {
-        return text
-      }
-
-      var out = text
-      let replacements: [(pattern: String, replacement: String)] = [
-        (#"(?i)"api_key"\s*:\s*"[^"]*""#, #""api_key":"<redacted>""#),
-        (#"(?i)"authorization"\s*:\s*"[^"]*""#, #""authorization":"<redacted>""#),
-        (#"(?i)"x-ondevice-agent-token"\s*:\s*"[^"]*""#, #""X-OnDevice-Agent-Token":"<redacted>""#),
-        (#"(?i)"ondevice_agent_token"\s*:\s*"[^"]*""#, #""ondevice_agent_token":"<redacted>""#),
-        (#"(?i)"agent_token"\s*:\s*"[^"]*""#, #""agent_token":"<redacted>""#),
-        (#"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"#, #"Authorization: Bearer <redacted>"#),
-        (#"(?i)\bbearer\s+[A-Za-z0-9._\-]{10,}"#, #"Bearer <redacted>"#),
-        (#"(?i)data:image\\?/[^"\s]*base64,[^"\s]+"#, #"data:image/png;base64,<omitted>"#),
-        (#"(?i)\\bondevice_agent_token=([A-Za-z0-9%._\\-]{6,})"#, #"ondevice_agent_token=<redacted>"#),
-        (#"(?i)([?&]token=)([A-Za-z0-9%._\\-]{6,})"#, #"$1<redacted>"#),
-      ]
-
-      for item in replacements {
-        guard let regex = try? NSRegularExpression(pattern: item.pattern) else {
-          continue
-        }
-        let range = NSRange(out.startIndex..<out.endIndex, in: out)
-        out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: item.replacement)
-      }
-      return out
-    }
 }
 
 private struct NotesView: View {

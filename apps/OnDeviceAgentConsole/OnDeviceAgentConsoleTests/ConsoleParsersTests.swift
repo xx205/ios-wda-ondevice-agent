@@ -77,4 +77,11 @@ final class ConsoleParsersTests: XCTestCase {
     XCTAssertEqual(direct.cachedTokens, 4)
     XCTAssertEqual(env.totalTokens, 5)
   }
+
+  func testConsoleRedactionRedactsAgentTokenCookie() {
+    let input = "Cookie: ondevice_agent_token=abcDEF012345; other=1"
+    let out = ConsoleRedaction.redactSensitiveText(input)
+    XCTAssertFalse(out.contains("abcDEF012345"))
+    XCTAssertTrue(out.contains("ondevice_agent_token=<redacted>"))
+  }
 }
