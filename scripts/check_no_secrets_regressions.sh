@@ -36,11 +36,11 @@ must_not_have() {
   fi
 }
 
-wda_file="$repo_root/third_party/WebDriverAgent/WebDriverAgentRunner/UITestingUITests.m"
-console_view="$repo_root/apps/OnDeviceAgentConsole/OnDeviceAgentConsole/ContentView.swift"
+wda_file="$repo_root/wda_overlay/WebDriverAgentRunner/UITestingUITests.m"
+console_redaction="$repo_root/apps/OnDeviceAgentConsole/OnDeviceAgentConsole/Utilities/ConsoleRedaction.swift"
 
 [[ -f "$wda_file" ]] || fail "missing $wda_file"
-[[ -f "$console_view" ]] || fail "missing $console_view"
+[[ -f "$console_redaction" ]] || fail "missing $console_redaction"
 
 echo "== Runner web UI token storage =="
 must_have "stripTokenFromURL\\(" "$wda_file"
@@ -59,14 +59,14 @@ must_have "authorization" "$wda_file"
 must_have "api_key" "$wda_file"
 
 echo "== Server logs must not print full request headers =="
-route_req="$repo_root/third_party/WebDriverAgent/WebDriverAgentLib/Routing/FBRouteRequest.m"
+route_req="$repo_root/wda_overlay/WebDriverAgentLib/Routing/FBRouteRequest.m"
 [[ -f "$route_req" ]] || fail "missing $route_req"
 must_not_have "Headers %@" "$route_req"
 
 echo "== Console redaction covers agent token and auth =="
-must_have "x-ondevice-agent-token" "$console_view"
-must_have "agent_token" "$console_view"
-must_have "ondevice_agent_token" "$console_view"
-must_have "Authorization" "$console_view"
+must_have "x-ondevice-agent-token" "$console_redaction"
+must_have "agent_token" "$console_redaction"
+must_have "ondevice_agent_token" "$console_redaction"
+must_have "Authorization" "$console_redaction"
 
 echo "OK: no-secrets regressions checks passed."

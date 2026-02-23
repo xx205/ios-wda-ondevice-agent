@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WDA_FILE = REPO_ROOT / "third_party" / "WebDriverAgent" / "WebDriverAgentRunner" / "UITestingUITests.m"
+WDA_FILE = REPO_ROOT / "wda_overlay" / "WebDriverAgentRunner" / "UITestingUITests.m"
 
 
 def normalize_key(text: str) -> str:
