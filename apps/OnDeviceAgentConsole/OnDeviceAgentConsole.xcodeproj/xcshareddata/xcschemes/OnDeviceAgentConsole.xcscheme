@@ -28,7 +28,26 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "EC2244114521FFA20CB5FCB6"
+               BuildableName = "OnDeviceAgentConsoleTests.xctest"
+               BlueprintName = "OnDeviceAgentConsoleTests"
+               ReferencedContainer = "container:OnDeviceAgentConsole.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "A0B1C2D3E4F5060708090A0C"
+            BuildableName = "OnDeviceAgentConsole.app"
+            BlueprintName = "OnDeviceAgentConsole"
+            ReferencedContainer = "container:OnDeviceAgentConsole.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

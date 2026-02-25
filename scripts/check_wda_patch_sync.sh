@@ -40,13 +40,16 @@ fi
 patch_path="$repo_root/patches/webdriveragent_ondevice_agent_webui.patch"
 overlay_root="$repo_root/wda_overlay"
 
-files_to_check=(
-  "WebDriverAgentRunner/UITestingUITests.m"
-  "WebDriverAgentLib/Routing/FBRouteRequest.h"
-  "WebDriverAgentLib/Routing/FBRouteRequest-Private.h"
-  "WebDriverAgentLib/Routing/FBRouteRequest.m"
-  "WebDriverAgentLib/Routing/FBWebServer.m"
-)
+patched_files_from_patch() {
+  local patch="$1"
+  awk '
+    /^diff --git a\// {
+      p=$4;
+      sub(/^b\//, "", p);
+      print p;
+    }
+  ' "$patch" | sort -u
+}
 
 if [[ ! -f "$patch_path" ]]; then
   echo "Patch not found: $patch_path" >&2
@@ -57,13 +60,15 @@ if [[ ! -e "$wda_dir/.git" ]]; then
   echo "Tip: run 'git submodule update --init --recursive' in repo root." >&2
   exit 2
 fi
-for rel in "${files_to_check[@]}"; do
-  overlay_path="$overlay_root/$rel"
-  if [[ ! -f "$overlay_path" ]]; then
-    echo "Overlay file not found: $overlay_path" >&2
-    exit 2
-  fi
-done
+
+files_to_check=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && files_to_check+=("$line")
+done < <(patched_files_from_patch "$patch_path")
+if [[ "${#files_to_check[@]}" -eq 0 ]]; then
+  echo "No files found in patch: $patch_path" >&2
+  exit 2
+fi
 
 tmp_worktree="$(mktemp -d)"
 cleanup() {
@@ -83,8 +88,19 @@ for rel in "${files_to_check[@]}"; do
   overlay_path="$overlay_root/$rel"
   patched="$tmp_worktree/$rel"
   if [[ ! -f "$patched" ]]; then
-    echo "Patched file not found: $patched" >&2
-    exit 2
+    # Deleted by patch. Overlay must not keep a stale copy.
+    if [[ -f "$overlay_path" ]]; then
+      echo "Mismatch: overlay has file deleted by patch: $rel" >&2
+      echo "Tip: run 'bash scripts/update_wda_overlay_from_patch.sh' to refresh overlay from patch." >&2
+      exit 1
+    fi
+    continue
+  fi
+
+  if [[ ! -f "$overlay_path" ]]; then
+    echo "Mismatch: overlay missing patched file: $rel" >&2
+    echo "Tip: run 'bash scripts/update_wda_overlay_from_patch.sh' to refresh overlay from patch." >&2
+    exit 1
   fi
 
   if ! diff -u "$overlay_path" "$patched" >/dev/null; then

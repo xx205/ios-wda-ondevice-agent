@@ -46,6 +46,9 @@ final class ConsoleStore: ObservableObject {
     static let timeoutSeconds = 90.0
     static let stepDelaySeconds = 0.5
     static let maxCompletionTokens = 32768
+    static let exportScreenshotLimit = 60
+    static let exportScreenshotFormat = "jpeg"
+    static let exportScreenshotQuality = 0.7
 
     static let defaultTask =
       "在小红书上找影视飓风5篇点赞量超过1万的笔记，统计封面上的字，收集到飞书的表格里。"
@@ -116,6 +119,7 @@ final class ConsoleStore: ObservableObject {
     var insecureSkipTLSVerify: Bool = false
     var halfResScreenshot: Bool = true
     var useW3CActionsForSwipe: Bool = true
+    var restartResponsesByPlan: Bool = false
 
     var useCustomSystemPrompt: Bool = false
     var systemPrompt: String = ""
@@ -171,7 +175,7 @@ final class ConsoleStore: ObservableObject {
   private var networkMonitor: NWPathMonitor?
   private var networkMonitorQueue: DispatchQueue?
 
-  private static func l10n(_ key: String, _ args: CVarArg...) -> String {
+  nonisolated fileprivate static func l10n(_ key: String, _ args: CVarArg...) -> String {
     if args.isEmpty { return NSLocalizedString(key, comment: "") }
     return String(format: NSLocalizedString(key, comment: ""), arguments: args)
   }
@@ -478,207 +482,52 @@ final class ConsoleStore: ObservableObject {
     )
   }
 
-  static func validateQRCodeConfigRaw(_ raw: String) -> [String] {
-    guard let data = raw.data(using: .utf8) else { return [l10n("QR content is not valid UTF-8")] }
-    let json: Any
+  nonisolated static func validateQRCodeConfigRaw(_ raw: String) -> [String] {
+    let dict: [String: Any]
     do {
-      json = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+      dict = try QRCodeConfigCodec.parseDict(raw)
+    } catch let e as ConfigImportError {
+      switch e {
+      case .notValidUTF8:
+        return [l10n("QR content is not valid UTF-8")]
+      case .invalidJSON(let msg):
+        return [l10n("Invalid JSON: %@", msg)]
+      case .notJSONObject:
+        return [l10n("JSON root must be an object")]
+      case .unknownKey(let k):
+        return [l10n("Unknown config key: %@", k)]
+      case .invalidValue(let key, let msg):
+        return [l10n("Invalid value for %@: %@", key, msg)]
+      }
     } catch {
       return [l10n("Invalid JSON: %@", error.localizedDescription)]
     }
-    guard let dict = json as? [String: Any] else { return [l10n("JSON root must be an object")] }
-
-    enum Kind {
-      case string
-      case bool
-      case positiveInt
-      case positiveDouble
-      case apiMode
-      case optionalString
-    }
-
-    let kinds: [String: Kind] = [
-      "base_url": .string,
-      "model": .string,
-      "api_mode": .apiMode,
-      "api_key": .string,
-      "remember_api_key": .bool,
-      "debug_log_raw_assistant": .bool,
-      "insecure_skip_tls_verify": .bool,
-      "half_res_screenshot": .bool,
-      "use_w3c_actions_for_swipe": .bool,
-      "doubao_seed_enable_session_cache": .bool,
-      "task": .string,
-      "max_steps": .positiveInt,
-      "max_completion_tokens": .positiveInt,
-      "timeout_seconds": .positiveDouble,
-      "step_delay_seconds": .positiveDouble,
-      "use_custom_system_prompt": .bool,
-      "system_prompt": .optionalString,
-      "reasoning_effort": .optionalString,
-    ]
-
-    func str(_ v: Any) -> String? {
-      if v is NSNull { return nil }
-      if let s = v as? String { return s }
-      if let n = v as? NSNumber { return n.stringValue }
-      return nil
-    }
-
-    func bool(_ v: Any) -> Bool? {
-      if v is NSNull { return nil }
-      if let b = v as? Bool { return b }
-      if let n = v as? NSNumber { return n.boolValue }
-      if let s = v as? String {
-        switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "true", "1", "yes", "y", "on":
-          return true
-        case "false", "0", "no", "n", "off":
-          return false
-        default:
-          return nil
-        }
-      }
-      return nil
-    }
-
-    func int(_ v: Any) -> Int? {
-      if v is NSNull { return nil }
-      if let i = v as? Int { return i }
-      if let n = v as? NSNumber { return n.intValue }
-      if let s = v as? String {
-        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
-      }
-      return nil
-    }
-
-    func dbl(_ v: Any) -> Double? {
-      if v is NSNull { return nil }
-      if let d = v as? Double { return d }
-      if let n = v as? NSNumber { return n.doubleValue }
-      if let s = v as? String {
-        return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
-      }
-      return nil
-    }
-
-    var errors: [String] = []
-    for (k, v) in dict {
-      guard let kind = kinds[k] else {
-        errors.append(l10n("Unknown config key: %@", k))
-        continue
-      }
-      switch kind {
-      case .string:
-        guard str(v) != nil else {
-          errors.append(l10n("Invalid value for %@: must be a string", k))
-          continue
-        }
-      case .optionalString:
-        if v is NSNull { continue }
-        guard str(v) != nil else {
-          errors.append(l10n("Invalid value for %@: must be a string or null", k))
-          continue
-        }
-      case .bool:
-        guard bool(v) != nil else {
-          errors.append(l10n("Invalid value for %@: must be a boolean", k))
-          continue
-        }
-      case .positiveInt:
-        guard let n = int(v) else {
-          errors.append(l10n("Invalid value for %@: must be an integer", k))
-          continue
-        }
-        if n <= 0 {
-          errors.append(l10n("Invalid value for %@: must be > 0", k))
-        }
-      case .positiveDouble:
-        guard let d = dbl(v) else {
-          errors.append(l10n("Invalid value for %@: must be a number", k))
-          continue
-        }
-        if d <= 0 {
-          errors.append(l10n("Invalid value for %@: must be > 0", k))
-        }
-      case .apiMode:
-        guard let s = str(v) else {
-          errors.append(l10n("Invalid value for %@: must be a string", k))
-          continue
-        }
-        let mode = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if mode != Defaults.apiMode && mode != "chat_completions" {
-          errors.append(l10n("Invalid value for %@: unsupported api_mode '%@'", k, mode))
-        }
-      }
-    }
-
-    return errors
+    return QRCodeConfigCodec.validateDict(dict)
   }
 
   func importConfigFromQRCode(_ raw: String) throws {
-    let errors = Self.validateQRCodeConfigRaw(raw)
+    let dict = try QRCodeConfigCodec.parseDict(raw)
+    let errors = QRCodeConfigCodec.validateDict(dict)
     if let first = errors.first {
       throw ConfigImportError.invalidValue(key: "config", message: first)
-    }
-
-    guard let data = raw.data(using: .utf8) else {
-      throw ConfigImportError.notValidUTF8
-    }
-    let json: Any
-    do {
-      json = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
-    } catch {
-      throw ConfigImportError.invalidJSON(error.localizedDescription)
-    }
-    guard let dict = json as? [String: Any] else {
-      throw ConfigImportError.notJSONObject
     }
 
     stateGeneration &+= 1
 
     func str(_ key: String) -> String? {
-      guard let v = dict[key] else { return nil }
-      if let s = v as? String { return s }
-      if let n = v as? NSNumber { return n.stringValue }
-      return nil
+      QRCodeConfigCodec.JSONCoerce.string(dict[key])
     }
 
     func bool(_ key: String) -> Bool? {
-      guard let v = dict[key] else { return nil }
-      if let b = v as? Bool { return b }
-      if let n = v as? NSNumber { return n.boolValue }
-      if let s = v as? String {
-        switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "true", "1", "yes", "y", "on":
-          return true
-        case "false", "0", "no", "n", "off":
-          return false
-        default:
-          return nil
-        }
-      }
-      return nil
+      QRCodeConfigCodec.JSONCoerce.bool(dict[key])
     }
 
     func int(_ key: String) -> Int? {
-      guard let v = dict[key] else { return nil }
-      if let i = v as? Int { return i }
-      if let n = v as? NSNumber { return n.intValue }
-      if let s = v as? String {
-        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
-      }
-      return nil
+      QRCodeConfigCodec.JSONCoerce.int(dict[key])
     }
 
     func dbl(_ key: String) -> Double? {
-      guard let v = dict[key] else { return nil }
-      if let d = v as? Double { return d }
-      if let n = v as? NSNumber { return n.doubleValue }
-      if let s = v as? String {
-        return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
-      }
-      return nil
+      QRCodeConfigCodec.JSONCoerce.double(dict[key])
     }
 
     if let v = str("base_url") { draft.baseUrl = v }
@@ -691,6 +540,7 @@ final class ConsoleStore: ObservableObject {
     if let v = bool("insecure_skip_tls_verify") { draft.insecureSkipTLSVerify = v }
     if let v = bool("half_res_screenshot") { draft.halfResScreenshot = v }
     if let v = bool("use_w3c_actions_for_swipe") { draft.useW3CActionsForSwipe = v }
+    if let v = bool("restart_responses_by_plan") { draft.restartResponsesByPlan = v }
     if let v = bool("doubao_seed_enable_session_cache") { draft.doubaoSeedEnableSessionCache = v }
 
     if let v = bool("use_custom_system_prompt") { draft.useCustomSystemPrompt = v }
@@ -714,161 +564,30 @@ final class ConsoleStore: ObservableObject {
     return "\(url)|\(token)"
   }
 
-  private enum EventStreamWatchdogError: Error {
-    case stalled
-  }
-
-  private var lastEventStreamLineAt: Date = .distantPast
-
-  private static func sseValue(_ line: String, prefix: String) -> String? {
-    guard line.hasPrefix(prefix) else { return nil }
-    var v = line.dropFirst(prefix.count)
-    if v.first == " " {
-      v = v.dropFirst()
-    }
-    return String(v)
-  }
-
-  private func watchEventStreamStaleness(key: String) async throws {
-    let staleAfterSeconds: TimeInterval = 45
-    while !Task.isCancelled {
-      if eventStreamKey() != key {
-        return
-      }
-      if autoRefreshSuspendCount > 0 {
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        continue
-      }
-
-      let last = lastEventStreamLineAt
-      if last != .distantPast, Date().timeIntervalSince(last) > staleAfterSeconds {
-        throw EventStreamWatchdogError.stalled
-      }
-
-      try? await Task.sleep(nanoseconds: 1_000_000_000)
-    }
-  }
-
-  private func consumeEventStreamWithWatchdog(_ bytes: URLSession.AsyncBytes, key: String) async throws {
-    lastEventStreamLineAt = Date()
-
-    var firstError: Error?
-    try await withThrowingTaskGroup(of: Void.self) { group in
-      group.addTask { [weak self] in
-        guard let self else { return }
-        try await self.consumeEventStream(bytes, key: key)
-      }
-      group.addTask { [weak self] in
-        guard let self else { return }
-        try await self.watchEventStreamStaleness(key: key)
-      }
-
-      do {
-        _ = try await group.next()
-      } catch {
-        firstError = error
-      }
-
-      group.cancelAll()
-      do {
-        try await group.waitForAll()
-      } catch {
-        if firstError == nil, !(error is CancellationError) {
-          firstError = error
-        }
-      }
-
-      if let firstError {
-        throw firstError
-      }
-    }
-  }
-
   private func runEventStreamLoop() async {
-    var backoffMs = 200
-    while !Task.isCancelled {
-      if autoRefreshSuspendCount > 0 {
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        continue
+    let service = AgentEventStreamService(
+      makeClient: { [weak self] in try self?.makeClient() },
+      eventStreamKey: { [weak self] in self?.eventStreamKey() ?? "" },
+      isSuspended: { [weak self] in (self?.autoRefreshSuspendCount ?? 0) > 0 },
+      includeDefaultSystemPrompt: { [weak self] in
+        (self?.defaultSystemPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ?? true
       }
-
-      let key = eventStreamKey()
-      do {
-        let client = try makeClient()
-        let includeDefaultPrompt = defaultSystemPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let bytes = try await client.openEventStream(includeDefaultSystemPrompt: includeDefaultPrompt)
-
-        backoffMs = 200
-        try await consumeEventStreamWithWatchdog(bytes, key: key)
-      } catch {
-        if Task.isCancelled {
-          return
+    )
+    await service.run(
+      onEvent: { [weak self] ev in
+        guard let self else { return }
+        await self.applyPushEvent(name: ev.name, data: ev.data)
+      },
+      onConnectionError: { [weak self] msg in
+        guard let self else { return }
+        if self.connectionError != msg {
+          self.connectionError = msg
         }
-        if error is EventStreamWatchdogError {
-          continue
+        if self.localNetworkAccess != nil {
+          self.localNetworkAccess = nil
         }
-        let msg = error.localizedDescription
-        if connectionError != msg {
-          connectionError = msg
-        }
-        if localNetworkAccess != nil {
-          localNetworkAccess = nil
-        }
-
-        let delayMs = min(backoffMs, 5000)
-        backoffMs = min(backoffMs * 2, 5000)
-        try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
       }
-    }
-  }
-
-  private func consumeEventStream(_ bytes: URLSession.AsyncBytes, key: String) async throws {
-    var currentEvent: String = ""
-    var dataLines: [String] = []
-    var didApplySnapshot = false
-
-    for try await rawLine in bytes.lines {
-      if Task.isCancelled {
-        return
-      }
-      if eventStreamKey() != key {
-        return
-      }
-      lastEventStreamLineAt = Date()
-
-      let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
-
-      if line.isEmpty {
-        let event = currentEvent.isEmpty ? "message" : currentEvent
-        let data = dataLines.joined(separator: "\n")
-        currentEvent = ""
-        dataLines.removeAll(keepingCapacity: true)
-
-        if autoRefreshSuspendCount > 0 {
-          continue
-        }
-
-        if event == "snapshot" {
-          didApplySnapshot = true
-          await applyPushEvent(name: event, data: data)
-        } else if didApplySnapshot {
-          await applyPushEvent(name: event, data: data)
-        }
-        continue
-      }
-
-      if line.hasPrefix(":") {
-        continue
-      }
-      if let v = Self.sseValue(line, prefix: "event:") {
-        currentEvent = v.trimmingCharacters(in: .whitespacesAndNewlines)
-        continue
-      }
-      if let v = Self.sseValue(line, prefix: "data:") {
-        dataLines.append(v)
-        continue
-      }
-    }
+    )
   }
 
   private func applyPushEvent(name: String, data: String) async {
@@ -1188,7 +907,7 @@ final class ConsoleStore: ObservableObject {
       let req = try makeConfigRequest()
       let resp = try await client.start(req)
       if resp.ok == false {
-        lastActionError = resp.error ?? "Start failed"
+        lastActionError = resp.error ?? NSLocalizedString("Start failed", comment: "")
       } else {
         lastActionError = nil
         connectionError = nil
@@ -1263,57 +982,52 @@ final class ConsoleStore: ObservableObject {
     }
   }
 
+  enum ValidationIssue: Equatable {
+    case baseURLRequired
+    case modelRequired
+    case taskRequired
+
+    case maxStepsInvalid
+    case timeoutSecondsInvalid
+    case stepDelaySecondsInvalid
+    case maxOutputTokensInvalid
+
+    case apiKeyRequired
+    case agentTokenRequiredForLAN
+
+    var l10nKey: String {
+      switch self {
+      case .baseURLRequired: return "Base URL is required"
+      case .modelRequired: return "Model is required"
+      case .taskRequired: return "Task is required"
+      case .maxStepsInvalid: return "Max Steps must be > 0"
+      case .timeoutSecondsInvalid: return "Timeout (seconds) must be > 0"
+      case .stepDelaySecondsInvalid: return "Step Delay (seconds) must be > 0"
+      case .maxOutputTokensInvalid: return "Max Tokens must be > 0"
+      case .apiKeyRequired: return "API Key is required"
+      case .agentTokenRequiredForLAN: return "Agent token is required for LAN access"
+      }
+    }
+  }
+
+  private func validationIssues() -> [ValidationIssue] {
+    ConsoleConfigValidator.validationIssues(draft: draft)
+  }
+
+  private func runValidationIssues() -> [ValidationIssue] {
+    ConsoleConfigValidator.runValidationIssues(
+      draft: draft,
+      status: status,
+      isLoopbackRunnerURL: isLoopbackRunnerURL
+    )
+  }
+
   func validationErrors() -> [String] {
-    var errs: [String] = []
-
-    if draft.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      errs.append("Base URL is required")
-    }
-    if draft.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      errs.append("Model is required")
-    }
-    if draft.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      errs.append("Task is required")
-    }
-
-    let maxStepsRaw = draft.maxSteps.trimmingCharacters(in: .whitespacesAndNewlines)
-    let timeoutRaw = draft.timeoutSeconds.trimmingCharacters(in: .whitespacesAndNewlines)
-    let stepDelayRaw = draft.stepDelaySeconds.trimmingCharacters(in: .whitespacesAndNewlines)
-    let maxTokensRaw = draft.maxCompletionTokens.trimmingCharacters(in: .whitespacesAndNewlines)
-
-    if Int(maxStepsRaw) == nil || (Int(maxStepsRaw) ?? 0) <= 0 {
-      errs.append("Max Steps must be > 0")
-    }
-    if Double(timeoutRaw) == nil || (Double(timeoutRaw) ?? 0) <= 0 {
-      errs.append("Timeout (seconds) must be > 0")
-    }
-    if Double(stepDelayRaw) == nil || (Double(stepDelayRaw) ?? 0) <= 0 {
-      errs.append("Step Delay (seconds) must be > 0")
-    }
-    if Int(maxTokensRaw) == nil || (Int(maxTokensRaw) ?? 0) <= 0 {
-      errs.append("Max Tokens must be > 0")
-    }
-
-    return errs
+    validationIssues().map(\.l10nKey)
   }
 
   func runValidationErrors() -> [String] {
-    var errs = validationErrors()
-
-    let key = draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let apiKeySet = status?.config.apiKeySet ?? false
-    if key.isEmpty, !apiKeySet {
-      errs.append("API Key is required")
-    }
-
-    if !isLoopbackRunnerURL {
-      let token = draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
-      if token.isEmpty {
-        errs.append("Agent token is required for LAN access")
-      }
-    }
-
-    return errs
+    runValidationIssues().map(\.l10nKey)
   }
 
   func ensureStepScreenshotLoaded(step: Int) async {
@@ -1332,7 +1046,7 @@ final class ConsoleStore: ObservableObject {
       let png = try await client.getStepScreenshotPNG(step: step)
       guard gen == stateGeneration else { return }
       guard let image = PlatformImage(data: png) else {
-        stepScreenshotErrors[step] = "Invalid screenshot image"
+        stepScreenshotErrors[step] = NSLocalizedString("Invalid screenshot image", comment: "")
         return
       }
       stepScreenshots[step] = image
@@ -1341,6 +1055,43 @@ final class ConsoleStore: ObservableObject {
       guard gen == stateGeneration else { return }
       stepScreenshotErrors[step] = error.localizedDescription
     }
+  }
+
+  struct StepScreenshotsBatch: Sendable {
+    var mimeType: String
+    var format: String
+    var imagesBase64: [Int: String]
+    var missingSteps: [Int]
+  }
+
+  func fetchStepScreenshotsBase64(
+    steps: [Int],
+    format: String = Defaults.exportScreenshotFormat,
+    quality: Double = Defaults.exportScreenshotQuality
+  ) async throws -> StepScreenshotsBatch {
+    let uniqueSteps = Array(Set(steps.filter { $0 >= 0 })).sorted()
+    let client = try makeClient()
+    let payload = try await client.getStepScreenshotsBase64(
+      steps: uniqueSteps,
+      limit: nil,
+      format: format,
+      quality: quality
+    )
+    if !payload.ok {
+      throw AgentClientError.server(payload.error)
+    }
+
+    var images: [Int: String] = [:]
+    for (k, v) in payload.images {
+      guard let step = Int(k), step >= 0 else { continue }
+      images[step] = v
+    }
+    return StepScreenshotsBatch(
+      mimeType: payload.mimeType,
+      format: payload.format,
+      imagesBase64: images,
+      missingSteps: payload.missing
+    )
   }
 
   func isDoubaoSeedResponsesMode() -> Bool {
@@ -1360,6 +1111,7 @@ final class ConsoleStore: ObservableObject {
     var insecure_skip_tls_verify: Bool
     var half_res_screenshot: Bool
     var use_w3c_actions_for_swipe: Bool
+    var restart_responses_by_plan: Bool
     var doubao_seed_enable_session_cache: Bool
 
     var task: String
@@ -1390,6 +1142,7 @@ final class ConsoleStore: ObservableObject {
       insecure_skip_tls_verify: req.insecure_skip_tls_verify,
       half_res_screenshot: req.half_res_screenshot,
       use_w3c_actions_for_swipe: req.use_w3c_actions_for_swipe,
+      restart_responses_by_plan: req.restart_responses_by_plan,
       doubao_seed_enable_session_cache: req.doubao_seed_enable_session_cache,
       task: req.task,
       max_steps: req.max_steps,
@@ -1416,8 +1169,8 @@ final class ConsoleStore: ObservableObject {
     let task = draft.task
     let apiMode = draft.apiMode.trimmingCharacters(in: .whitespacesAndNewlines)
 
-    guard !baseUrl.isEmpty, !model.isEmpty, !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      throw AgentClientError.badResponse
+    if let first = validationIssues().first {
+      throw AgentClientError.server(NSLocalizedString(first.l10nKey, comment: ""))
     }
 
     let maxStepsRaw = draft.maxSteps.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1426,22 +1179,22 @@ final class ConsoleStore: ObservableObject {
     let stepDelayRaw = draft.stepDelaySeconds.trimmingCharacters(in: .whitespacesAndNewlines)
 
     guard let maxSteps = Int(maxStepsRaw), maxSteps > 0 else {
-      throw AgentClientError.badResponse
+      throw AgentClientError.server(NSLocalizedString(ValidationIssue.maxStepsInvalid.l10nKey, comment: ""))
     }
     guard let maxTokens = Int(maxTokensRaw), maxTokens > 0 else {
-      throw AgentClientError.badResponse
+      throw AgentClientError.server(NSLocalizedString(ValidationIssue.maxOutputTokensInvalid.l10nKey, comment: ""))
     }
     guard let timeout = Double(timeoutRaw), timeout > 0 else {
-      throw AgentClientError.badResponse
+      throw AgentClientError.server(NSLocalizedString(ValidationIssue.timeoutSecondsInvalid.l10nKey, comment: ""))
     }
     guard let stepDelay = Double(stepDelayRaw), stepDelay > 0 else {
-      throw AgentClientError.badResponse
+      throw AgentClientError.server(NSLocalizedString(ValidationIssue.stepDelaySecondsInvalid.l10nKey, comment: ""))
     }
 
     let key = draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     let agentToken = draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
     if requireLANToken, !isLoopbackRunnerURL, agentToken.isEmpty {
-      throw AgentClientError.server("Agent token is required for LAN access")
+      throw AgentClientError.server(NSLocalizedString(ValidationIssue.agentTokenRequiredForLAN.l10nKey, comment: ""))
     }
 
     return AgentConfigRequest(
@@ -1463,6 +1216,7 @@ final class ConsoleStore: ObservableObject {
       insecure_skip_tls_verify: draft.insecureSkipTLSVerify,
       half_res_screenshot: draft.halfResScreenshot,
       use_w3c_actions_for_swipe: draft.useW3CActionsForSwipe,
+      restart_responses_by_plan: draft.restartResponsesByPlan,
       api_key: key.isEmpty ? nil : key
     )
   }
@@ -1478,6 +1232,7 @@ final class ConsoleStore: ObservableObject {
     draft.insecureSkipTLSVerify = cfg.insecureSkipTlsVerify
     draft.halfResScreenshot = cfg.halfResScreenshot
     draft.useW3CActionsForSwipe = cfg.useW3CActionsForSwipe
+    draft.restartResponsesByPlan = cfg.restartResponsesByPlan
 
     draft.maxSteps = "\(cfg.maxSteps)"
     draft.maxCompletionTokens = "\(cfg.maxCompletionTokens)"
@@ -1722,5 +1477,403 @@ final class ConsoleStore: ObservableObject {
       }
     }
     return nil
+  }
+}
+
+// MARK: - QR code config parsing/validation
+
+enum QRConfigKind {
+  case string
+  case bool
+  case positiveInt
+  case positiveDouble
+  case apiMode
+  case optionalString
+}
+
+struct QRCodeConfigCodec {
+  enum JSONCoerce {
+    static func string(_ v: Any?) -> String? {
+      guard let v else { return nil }
+      if v is NSNull { return nil }
+      if let s = v as? String { return s }
+      if let n = v as? NSNumber { return n.stringValue }
+      return nil
+    }
+
+    static func bool(_ v: Any?) -> Bool? {
+      guard let v else { return nil }
+      if v is NSNull { return nil }
+      if let b = v as? Bool { return b }
+      if let n = v as? NSNumber { return n.boolValue }
+      if let s = v as? String {
+        switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "y", "on":
+          return true
+        case "false", "0", "no", "n", "off":
+          return false
+        default:
+          return nil
+        }
+      }
+      return nil
+    }
+
+    static func int(_ v: Any?) -> Int? {
+      guard let v else { return nil }
+      if v is NSNull { return nil }
+      if let i = v as? Int { return i }
+      if let n = v as? NSNumber { return n.intValue }
+      if let s = v as? String {
+        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+      }
+      return nil
+    }
+
+    static func double(_ v: Any?) -> Double? {
+      guard let v else { return nil }
+      if v is NSNull { return nil }
+      if let d = v as? Double { return d }
+      if let n = v as? NSNumber { return n.doubleValue }
+      if let s = v as? String {
+        return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
+      }
+      return nil
+    }
+  }
+
+  private static let kinds: [String: QRConfigKind] = [
+    "base_url": .string,
+    "model": .string,
+    "api_mode": .apiMode,
+    "api_key": .string,
+    "remember_api_key": .bool,
+    "debug_log_raw_assistant": .bool,
+    "insecure_skip_tls_verify": .bool,
+    "half_res_screenshot": .bool,
+    "use_w3c_actions_for_swipe": .bool,
+    "restart_responses_by_plan": .bool,
+    "doubao_seed_enable_session_cache": .bool,
+    "task": .string,
+    "max_steps": .positiveInt,
+    "max_completion_tokens": .positiveInt,
+    "timeout_seconds": .positiveDouble,
+    "step_delay_seconds": .positiveDouble,
+    "use_custom_system_prompt": .bool,
+    "system_prompt": .optionalString,
+    "reasoning_effort": .optionalString,
+  ]
+
+  static func parseDict(_ raw: String) throws -> [String: Any] {
+    guard let data = raw.data(using: .utf8) else {
+      throw ConsoleStore.ConfigImportError.notValidUTF8
+    }
+    let json: Any
+    do {
+      json = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    } catch {
+      throw ConsoleStore.ConfigImportError.invalidJSON(error.localizedDescription)
+    }
+    guard let dict = json as? [String: Any] else {
+      throw ConsoleStore.ConfigImportError.notJSONObject
+    }
+    return dict
+  }
+
+  static func validateDict(_ dict: [String: Any]) -> [String] {
+    var errors: [String] = []
+    for (k, v) in dict {
+      guard let kind = kinds[k] else {
+        errors.append(ConsoleStore.l10n("Unknown config key: %@", k))
+        continue
+      }
+      switch kind {
+      case .string:
+        guard JSONCoerce.string(v) != nil else {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be a string", k))
+          continue
+        }
+      case .optionalString:
+        if v is NSNull { continue }
+        guard JSONCoerce.string(v) != nil else {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be a string or null", k))
+          continue
+        }
+      case .bool:
+        guard JSONCoerce.bool(v) != nil else {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be a boolean", k))
+          continue
+        }
+      case .positiveInt:
+        guard let n = JSONCoerce.int(v) else {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be an integer", k))
+          continue
+        }
+        if n <= 0 {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be > 0", k))
+        }
+      case .positiveDouble:
+        guard let d = JSONCoerce.double(v) else {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be a number", k))
+          continue
+        }
+        if d <= 0 {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be > 0", k))
+        }
+      case .apiMode:
+        guard let s = JSONCoerce.string(v) else {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: must be a string", k))
+          continue
+        }
+        let mode = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mode != ConsoleStore.Defaults.apiMode && mode != "chat_completions" {
+          errors.append(ConsoleStore.l10n("Invalid value for %@: unsupported api_mode '%@'", k, mode))
+        }
+      }
+    }
+    return errors
+  }
+}
+
+// MARK: - Config validation
+
+struct ConsoleConfigValidator {
+  static func validationIssues(draft: ConsoleStore.Draft) -> [ConsoleStore.ValidationIssue] {
+    var issues: [ConsoleStore.ValidationIssue] = []
+
+    if draft.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      issues.append(.baseURLRequired)
+    }
+    if draft.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      issues.append(.modelRequired)
+    }
+    if draft.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      issues.append(.taskRequired)
+    }
+
+    let maxStepsRaw = draft.maxSteps.trimmingCharacters(in: .whitespacesAndNewlines)
+    let timeoutRaw = draft.timeoutSeconds.trimmingCharacters(in: .whitespacesAndNewlines)
+    let stepDelayRaw = draft.stepDelaySeconds.trimmingCharacters(in: .whitespacesAndNewlines)
+    let maxTokensRaw = draft.maxCompletionTokens.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if Int(maxStepsRaw) == nil || (Int(maxStepsRaw) ?? 0) <= 0 {
+      issues.append(.maxStepsInvalid)
+    }
+    if Double(timeoutRaw) == nil || (Double(timeoutRaw) ?? 0) <= 0 {
+      issues.append(.timeoutSecondsInvalid)
+    }
+    if Double(stepDelayRaw) == nil || (Double(stepDelayRaw) ?? 0) <= 0 {
+      issues.append(.stepDelaySecondsInvalid)
+    }
+    if Int(maxTokensRaw) == nil || (Int(maxTokensRaw) ?? 0) <= 0 {
+      issues.append(.maxOutputTokensInvalid)
+    }
+
+    return issues
+  }
+
+  static func runValidationIssues(
+    draft: ConsoleStore.Draft,
+    status: AgentStatus?,
+    isLoopbackRunnerURL: Bool
+  ) -> [ConsoleStore.ValidationIssue] {
+    var issues = validationIssues(draft: draft)
+
+    let key = draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let apiKeySet = status?.config.apiKeySet ?? false
+    if key.isEmpty, !apiKeySet {
+      issues.append(.apiKeyRequired)
+    }
+
+    if !isLoopbackRunnerURL {
+      let token = draft.agentToken.trimmingCharacters(in: .whitespacesAndNewlines)
+      if token.isEmpty {
+        issues.append(.agentTokenRequiredForLAN)
+      }
+    }
+
+    return issues
+  }
+}
+
+struct SSEEvent: Equatable {
+  var name: String
+  var data: String
+}
+
+struct SSEEventParser {
+  private var currentEvent: String = ""
+  private var dataLines: [String] = []
+
+  mutating func consume(line rawLine: String) -> SSEEvent? {
+    let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+
+    if line.isEmpty {
+      let event = currentEvent.isEmpty ? "message" : currentEvent
+      let data = dataLines.joined(separator: "\n")
+      currentEvent = ""
+      dataLines.removeAll(keepingCapacity: true)
+      return SSEEvent(name: event, data: data)
+    }
+
+    if line.hasPrefix(":") {
+      return nil
+    }
+
+    if let v = Self.sseValue(line, prefix: "event:") {
+      currentEvent = v.trimmingCharacters(in: .whitespacesAndNewlines)
+      return nil
+    }
+    if let v = Self.sseValue(line, prefix: "data:") {
+      dataLines.append(v)
+      return nil
+    }
+    return nil
+  }
+
+  private static func sseValue(_ line: String, prefix: String) -> String? {
+    guard line.hasPrefix(prefix) else { return nil }
+    var v = line.dropFirst(prefix.count)
+    if v.first == " " {
+      v = v.dropFirst()
+    }
+    return String(v)
+  }
+}
+
+// MARK: - Event stream service (reduces responsibilities in ConsoleStore)
+
+@MainActor
+final class AgentEventStreamService {
+  private enum WatchdogError: Error {
+    case stalled
+  }
+
+  private let makeClient: () throws -> AgentClient?
+  private let eventStreamKey: () -> String
+  private let isSuspended: () -> Bool
+  private let includeDefaultSystemPrompt: () -> Bool
+
+  init(
+    makeClient: @escaping () throws -> AgentClient?,
+    eventStreamKey: @escaping () -> String,
+    isSuspended: @escaping () -> Bool,
+    includeDefaultSystemPrompt: @escaping () -> Bool
+  ) {
+    self.makeClient = makeClient
+    self.eventStreamKey = eventStreamKey
+    self.isSuspended = isSuspended
+    self.includeDefaultSystemPrompt = includeDefaultSystemPrompt
+  }
+
+  func run(
+    onEvent: @escaping (SSEEvent) async -> Void,
+    onConnectionError: @escaping (String) async -> Void
+  ) async {
+    var backoffMs = 200
+    while !Task.isCancelled {
+      if isSuspended() {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        continue
+      }
+
+      let key = eventStreamKey()
+      do {
+        guard let client = try makeClient() else {
+          throw AgentClientError.badResponse
+        }
+        let bytes = try await client.openEventStream(includeDefaultSystemPrompt: includeDefaultSystemPrompt())
+        backoffMs = 200
+        try await consume(bytes, key: key, onEvent: onEvent)
+      } catch {
+        if Task.isCancelled {
+          return
+        }
+        if error is WatchdogError {
+          continue
+        }
+        await onConnectionError(error.localizedDescription)
+
+        let delayMs = min(backoffMs, 5000)
+        backoffMs = min(backoffMs * 2, 5000)
+        try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+      }
+    }
+  }
+
+  private func consume(
+    _ bytes: URLSession.AsyncBytes,
+    key: String,
+    onEvent: @escaping (SSEEvent) async -> Void
+  ) async throws {
+    let staleAfterSeconds: TimeInterval = 45
+    var lastLineAt = Date()
+
+    var parser = SSEEventParser()
+    var didApplySnapshot = false
+
+    func watchdog() async throws {
+      while !Task.isCancelled {
+        if eventStreamKey() != key {
+          return
+        }
+        if isSuspended() {
+          try? await Task.sleep(nanoseconds: 200_000_000)
+          continue
+        }
+        if Date().timeIntervalSince(lastLineAt) > staleAfterSeconds {
+          throw WatchdogError.stalled
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+      }
+    }
+
+    var firstError: Error?
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask { @MainActor in
+        for try await rawLine in bytes.lines {
+          if Task.isCancelled {
+            return
+          }
+          if self.eventStreamKey() != key {
+            return
+          }
+          lastLineAt = Date()
+
+          guard let ev = parser.consume(line: rawLine) else { continue }
+          if self.isSuspended() {
+            continue
+          }
+          if ev.name == "snapshot" {
+            didApplySnapshot = true
+            await onEvent(ev)
+          } else if didApplySnapshot {
+            await onEvent(ev)
+          }
+        }
+      }
+      group.addTask { @MainActor in
+        try await watchdog()
+      }
+
+      do {
+        _ = try await group.next()
+      } catch {
+        firstError = error
+      }
+
+      group.cancelAll()
+      do {
+        try await group.waitForAll()
+      } catch {
+        if firstError == nil, !(error is CancellationError) {
+          firstError = error
+        }
+      }
+
+      if let firstError {
+        throw firstError
+      }
+    }
   }
 }

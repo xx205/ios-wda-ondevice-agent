@@ -379,6 +379,10 @@ private struct LiveProgressPanel: View {
                   if showUsage, let usage {
                     DisclosureGroup("Token Usage") {
                       VStack(alignment: .leading, spacing: 2) {
+                        Text(
+                          "doubao_seed_enable_session_cache: \((store.status?.config.doubaoSeedEnableSessionCache ?? false) ? "true" : "false")"
+                        )
+                        Text("cache_hit: \(usage.cachedTokens > 0 ? "true" : "false")")
                         Text(String(format: NSLocalizedString("Requests: %d", comment: ""), usage.requests))
                         Text(
                           String(
@@ -647,6 +651,13 @@ private struct LiveProgressPanel: View {
                 isOn: $store.draft.doubaoSeedEnableSessionCache
               )
             }
+
+            ToggleField(
+              "Restart history when a plan item completes",
+              help: "Responses only. Starts a new conversation segment whenever a plan checklist item is marked done (keeps Notes/Plan; resets previous_response_id).",
+              isOn: $store.draft.restartResponsesByPlan
+            )
+            .disabled(store.draft.apiMode != ConsoleStore.Defaults.apiMode)
 
             ToggleField(
               "Half-resolution screenshots",
@@ -1452,7 +1463,8 @@ private struct ChatExportHTMLSnapshot: Sendable {
   var configText: String
   var notes: String
   var items: [ChatExportItem]
-  var screenshotsPNG: [Int: Data]
+  var screenshotMimeType: String
+  var screenshotsBase64: [Int: String]
   var annotationsByStep: [Int: ChatExportActionAnnotation]
 }
 
@@ -1634,10 +1646,10 @@ private enum ChatExportHTML {
       }
       parts.append("</div>")
 
-      if it.kind == "request", attempt == nil, let png = snapshot.screenshotsPNG[step] {
-        let b64 = png.base64EncodedString()
+      if it.kind == "request", attempt == nil, let b64 = snapshot.screenshotsBase64[step], !b64.isEmpty {
+        let mime = snapshot.screenshotMimeType.isEmpty ? "image/png" : snapshot.screenshotMimeType
         parts.append("<div class=\"shot\">")
-        parts.append("<img src=\"data:image/png;base64,\(b64)\" alt=\"\(esc(String(format: NSLocalizedString("Step %d screenshot", comment: ""), step)))\" />")
+        parts.append("<img src=\"data:\(mime);base64,\(b64)\" alt=\"\(esc(String(format: NSLocalizedString("Step %d screenshot", comment: ""), step)))\" />")
         if snapshot.annotate,
            let ann = snapshot.annotationsByStep[step],
            let svg = svgOverlay(for: ann)
@@ -2335,9 +2347,12 @@ private struct ChatView: View {
             url = try OnDeviceAgentWriteTempText(exportChatRawJSONL(), filename: "agent_chat_\(ts).jsonl")
           case .htmlReport:
             exportProgressText = NSLocalizedString("Preparing screenshots…", comment: "")
-            await prefetchStepScreenshotsForExport()
+            let batch = try await fetchStepScreenshotsForExport()
             exportProgressText = NSLocalizedString("Building HTML…", comment: "")
-            let snapshot = buildChatHTMLSnapshot()
+            let snapshot = buildChatHTMLSnapshot(
+              screenshotMimeType: batch.mimeType,
+              screenshotsBase64: batch.imagesBase64
+            )
             let html = await Task.detached(priority: .userInitiated) {
               ChatExportHTML.build(snapshot: snapshot)
             }.value
@@ -2406,8 +2421,9 @@ private struct ChatView: View {
       return parts.joined(separator: " ")
     }
 
-    private func prefetchStepScreenshotsForExport() async {
-      let steps: [Int] = {
+    private func fetchStepScreenshotsForExport() async throws -> ConsoleStore.StepScreenshotsBatch {
+      let maxN = ConsoleStore.Defaults.exportScreenshotLimit
+      let stepsAll: [Int] = {
         var s: Set<Int> = []
         for it in store.chatItems {
           if it.kind == "request", it.attempt == nil, let step = it.step {
@@ -2417,28 +2433,23 @@ private struct ChatView: View {
         return s.sorted()
       }()
 
-      let total = steps.count
-      if total == 0 {
-        return
-      }
-      var loaded = 0
-      for step in steps {
-        exportProgressText = String(
-          format: NSLocalizedString("Preparing screenshots… %d/%d", comment: ""),
-          loaded,
-          total
+      if stepsAll.isEmpty {
+        return ConsoleStore.StepScreenshotsBatch(
+          mimeType: "image/png",
+          format: "png",
+          imagesBase64: [:],
+          missingSteps: []
         )
-        await store.ensureStepScreenshotLoaded(step: step)
-        loaded += 1
       }
-      exportProgressText = String(
-        format: NSLocalizedString("Preparing screenshots… %d/%d", comment: ""),
-        total,
-        total
-      )
+
+      let steps = Array(stepsAll.suffix(maxN))
+      return try await store.fetchStepScreenshotsBase64(steps: steps)
     }
 
-    private func buildChatHTMLSnapshot() -> ChatExportHTMLSnapshot {
+    private func buildChatHTMLSnapshot(
+      screenshotMimeType: String,
+      screenshotsBase64: [Int: String]
+    ) -> ChatExportHTMLSnapshot {
       let exportedAt = ISO8601DateFormatter().string(from: Date())
       let runnerURL = store.wdaURL.trimmingCharacters(in: .whitespacesAndNewlines)
       let annotate = store.annotateStepScreenshots
@@ -2491,19 +2502,6 @@ private struct ChatView: View {
         )
       }
 
-      let stepsNeedingScreenshots: Set<Int> = Set(
-        store.chatItems.compactMap { it in
-          if it.kind == "request", it.attempt == nil, let step = it.step { return step }
-          return nil
-        }
-      )
-      var screenshotsPNG: [Int: Data] = [:]
-      for step in stepsNeedingScreenshots {
-        if let img = store.stepScreenshots[step], let data = OnDeviceAgentPNGData(from: img) {
-          screenshotsPNG[step] = data
-        }
-      }
-
       var annotationsByStep: [Int: ChatExportActionAnnotation] = [:]
       if annotate {
         for (step, ann) in store.stepActionAnnotations {
@@ -2547,7 +2545,8 @@ private struct ChatView: View {
         configText: cfgText,
         notes: notes,
         items: items,
-        screenshotsPNG: screenshotsPNG,
+        screenshotMimeType: screenshotMimeType,
+        screenshotsBase64: screenshotsBase64,
         annotationsByStep: annotationsByStep
       )
     }
@@ -2561,9 +2560,14 @@ private struct ChatView: View {
       let replacements: [(pattern: String, replacement: String)] = [
         (#"(?i)"api_key"\s*:\s*"[^"]*""#, #""api_key":"<redacted>""#),
         (#"(?i)"authorization"\s*:\s*"[^"]*""#, #""authorization":"<redacted>""#),
+        (#"(?i)"x-ondevice-agent-token"\s*:\s*"[^"]*""#, #""X-OnDevice-Agent-Token":"<redacted>""#),
+        (#"(?i)"ondevice_agent_token"\s*:\s*"[^"]*""#, #""ondevice_agent_token":"<redacted>""#),
+        (#"(?i)"agent_token"\s*:\s*"[^"]*""#, #""agent_token":"<redacted>""#),
         (#"(?i)authorization:\s*bearer\s+[A-Za-z0-9._\-]+"#, #"Authorization: Bearer <redacted>"#),
         (#"(?i)\bbearer\s+[A-Za-z0-9._\-]{10,}"#, #"Bearer <redacted>"#),
         (#"(?i)data:image\\?/[^"\s]*base64,[^"\s]+"#, #"data:image/png;base64,<omitted>"#),
+        (#"(?i)\\bondevice_agent_token=([A-Za-z0-9%._\\-]{6,})"#, #"ondevice_agent_token=<redacted>"#),
+        (#"(?i)([?&]token=)([A-Za-z0-9%._\\-]{6,})"#, #"$1<redacted>"#),
       ]
 
       for item in replacements {

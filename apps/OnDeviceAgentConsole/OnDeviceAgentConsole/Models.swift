@@ -152,6 +152,7 @@ struct AgentConfig: Decodable, Equatable {
   let doubaoSeedEnableSessionCache: Bool
   let halfResScreenshot: Bool
   let useW3CActionsForSwipe: Bool
+  let restartResponsesByPlan: Bool
 
   let maxSteps: Int
   let maxCompletionTokens: Int
@@ -176,6 +177,7 @@ struct AgentConfig: Decodable, Equatable {
     case doubaoSeedEnableSessionCache = "doubao_seed_enable_session_cache"
     case halfResScreenshot = "half_res_screenshot"
     case useW3CActionsForSwipe = "use_w3c_actions_for_swipe"
+    case restartResponsesByPlan = "restart_responses_by_plan"
     case maxSteps = "max_steps"
     case maxCompletionTokens = "max_completion_tokens"
     case timeoutSeconds = "timeout_seconds"
@@ -199,6 +201,7 @@ struct AgentConfig: Decodable, Equatable {
     doubaoSeedEnableSessionCache = false
     halfResScreenshot = false
     useW3CActionsForSwipe = true
+    restartResponsesByPlan = false
     maxSteps = 0
     maxCompletionTokens = 0
     timeoutSeconds = 0
@@ -226,6 +229,7 @@ struct AgentConfig: Decodable, Equatable {
     doubaoSeedEnableSessionCache = c.decodeBoolLike(forKey: .doubaoSeedEnableSessionCache, default: true)
     halfResScreenshot = c.decodeBoolLike(forKey: .halfResScreenshot)
     useW3CActionsForSwipe = c.decodeBoolLike(forKey: .useW3CActionsForSwipe, default: true)
+    restartResponsesByPlan = c.decodeBoolLike(forKey: .restartResponsesByPlan)
 
     maxSteps = c.decodeIntLike(forKey: .maxSteps)
     maxCompletionTokens = c.decodeIntLike(forKey: .maxCompletionTokens)
@@ -287,6 +291,34 @@ struct AgentStepScreenshotPayload: Decodable {
   }
 }
 
+struct AgentStepScreenshotsPayload: Decodable {
+  let ok: Bool
+  let error: String
+  let format: String
+  let mimeType: String
+  let images: [String: String]
+  let missing: [Int]
+
+  enum CodingKeys: String, CodingKey {
+    case ok
+    case error
+    case format
+    case mimeType = "mime_type"
+    case images
+    case missing
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    ok = c.decodeBoolLike(forKey: .ok)
+    error = c.decodeStringOrEmpty(forKey: .error)
+    format = c.decodeStringOrEmpty(forKey: .format)
+    mimeType = c.decodeStringOrEmpty(forKey: .mimeType)
+    images = (try? c.decode([String: String].self, forKey: .images)) ?? [:]
+    missing = (try? c.decode([Int].self, forKey: .missing)) ?? []
+  }
+}
+
 struct AgentStartPayload: Decodable {
   let ok: Bool?
   let error: String?
@@ -329,5 +361,6 @@ struct AgentConfigRequest: Encodable {
   var insecure_skip_tls_verify: Bool
   var half_res_screenshot: Bool
   var use_w3c_actions_for_swipe: Bool
+  var restart_responses_by_plan: Bool
   var api_key: String?
 }
