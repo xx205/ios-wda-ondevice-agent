@@ -145,6 +145,8 @@
 "Reasoning effort (optional)" = "思考强度（可选）";
 "Enable Session Cache (Doubao Seed)" = "启用会话缓存（豆包 Seed）";
 "Responses only. Enables session caching for doubao-seed models to reduce tokens and improve stability." = "仅限 Responses API 模式。为 doubao-seed 模型启用会话缓存，以减少 token 用量并提升稳定性。";
+"Restart history when a plan item completes" = "计划项完成后重启对话历史";
+"Responses only. Starts a new conversation segment whenever a plan checklist item is marked done (keeps Notes/Plan; resets previous_response_id)." = "仅限 Responses API 模式。每当 Plan Checklist 有一项标记为完成，就重启一次对话历史分段（保留 Notes/Plan；清空 previous_response_id）。";
 "Half-resolution screenshots" = "截图分辨率减半";
 "Shrinks screenshots by 50% before sending to the model, reducing Token usage and often speeding up responses." = "发送给模型前，将截图缩小到原来的 50%，减少 Token 用量并加快响应。";
 "Use W3C actions for swipe" = "Swipe 使用 W3C actions";
@@ -235,12 +237,19 @@
 "Execution error: %@" = "执行错误：%@";
 "Logs stale: %@" = "日志未更新：%@";
 "Chat stale: %@" = "对话未更新：%@";
+"Start failed" = "启动失败";
+"Invalid screenshot image" = "截图图片无效";
 
 "Base URL is required" = "请填写 Base URL";
 "Model is required" = "请填写模型名称";
 "Task is required" = "请填写任务";
 "API Key is required" = "请填写 API 密钥（或先在设备上保存过密钥）";
 "Agent token is required for LAN access" = "局域网访问时请填写 Agent 令牌";
+"Invalid Runner URL: %@" = "Runner 连接地址无效：%@";
+"Cannot decode JSON response" = "无法解析 JSON 响应";
+"Cannot decode JSON response: %@" = "无法解析 JSON 响应：%@";
+"Bad response" = "响应异常";
+"Server error" = "服务端错误";
 "Max Steps must be > 0" = "最大步数必须大于 0";
 "Timeout (seconds) must be > 0" = "超时（秒）必须大于 0";
 "Step Delay (seconds) must be > 0" = "步间延迟（秒）必须大于 0";

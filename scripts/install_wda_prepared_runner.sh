@@ -80,6 +80,21 @@ if [[ ! -d "$project" ]]; then
   exit 2
 fi
 
+target_file="$wda_dir/WebDriverAgentRunner/UITestingUITests.m"
+if [[ ! -f "$target_file" ]]; then
+  echo "Target file not found: $target_file" >&2
+  exit 2
+fi
+if ! grep -q "FBOnDeviceAgentCommands" "$target_file" >/dev/null 2>&1; then
+  echo "WebDriverAgent patch is NOT applied to: $wda_dir" >&2
+  echo "This script would install an unpatched Runner (missing /agent/* endpoints)." >&2
+  echo >&2
+  echo "Fix (one-time):" >&2
+  echo "  bash scripts/apply_patch_to_wda.sh --wda-dir \"$wda_dir\"" >&2
+  echo >&2
+  exit 2
+fi
+
 mkdir -p "$derived_data"
 
 if [[ "$do_build" == "1" ]]; then

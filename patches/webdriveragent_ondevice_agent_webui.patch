@@ -132,7 +132,7 @@ index 3eee1926..cd23fc23 100644
 +
  @end
 diff --git a/WebDriverAgentRunner/UITestingUITests.m b/WebDriverAgentRunner/UITestingUITests.m
-index ad2ff455..7e078ac0 100644
+index ad2ff455..baae4849 100644
 --- a/WebDriverAgentRunner/UITestingUITests.m
 +++ b/WebDriverAgentRunner/UITestingUITests.m
 @@ -2,11 +2,15 @@
@@ -153,7 +153,7 @@ index ad2ff455..7e078ac0 100644
  
  #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
  #import <WebDriverAgentLib/FBConfiguration.h>
-@@ -14,6 +18,5916 @@
+@@ -14,6 +18,7223 @@
  #import <WebDriverAgentLib/FBWebServer.h>
  #import <WebDriverAgentLib/XCTestCase.h>
  
@@ -196,6 +196,7 @@ index ad2ff455..7e078ac0 100644
 +static NSString *const kOnDeviceAgentReasoningEffortKey = @"ONDEVICE_AGENT_REASONING_EFFORT";
 +static NSString *const kOnDeviceAgentDoubaoSeedEnableSessionCacheKey = @"ONDEVICE_AGENT_DOUBAO_SEED_ENABLE_SESSION_CACHE";
 +static NSString *const kOnDeviceAgentUseW3CActionsForSwipeKey = @"ONDEVICE_AGENT_USE_W3C_ACTIONS_FOR_SWIPE";
++static NSString *const kOnDeviceAgentRestartResponsesByPlanKey = @"ONDEVICE_AGENT_RESTART_RESPONSES_BY_PLAN";
 +static NSString *const kOnDeviceAgentAgentTokenHeader = @"X-OnDevice-Agent-Token";
 +static NSString *const kOnDeviceAgentAgentTokenQueryParam = @"token";
 +static NSString *const kOnDeviceAgentAgentTokenCookieName = @"ondevice_agent_token";
@@ -214,6 +215,9 @@ index ad2ff455..7e078ac0 100644
 +static NSUInteger const kOnDeviceAgentMaxLogLines = 300;
 +static NSUInteger const kOnDeviceAgentMaxLogLineChars = 2000;
 +static NSInteger const kOnDeviceAgentDefaultRefreshIntervalMs = 1500;
++// Chat Completions requests grow quickly. Keep a bounded, recent window to avoid context blowups
++// and reduce memory usage from embedded screenshots in older rounds.
++static NSUInteger const kOnDeviceAgentChatCompletionsMaxNonSystemMessages = 24; // 12 rounds (user+assistant)
 +
 +@interface OnDeviceAgentManager : NSObject
 ++ (instancetype)shared;
@@ -1008,6 +1012,24 @@ index ad2ff455..7e078ac0 100644
 +  return s;
 +}
 +
++static void OnDeviceAgentTrimChatCompletionsContextInPlace(NSMutableArray<NSDictionary *> *messages)
++{
++  if (messages.count == 0) {
++    return;
++  }
++
++  NSDictionary *first = [messages.firstObject isKindOfClass:NSDictionary.class] ? (NSDictionary *)messages.firstObject : nil;
++  BOOL hasSystem = [OnDeviceAgentStringOrEmpty(first[@"role"]) isEqualToString:@"system"];
++  NSUInteger start = hasSystem ? 1 : 0;
++  NSUInteger maxTotal = start + kOnDeviceAgentChatCompletionsMaxNonSystemMessages;
++  if (messages.count <= maxTotal) {
++    return;
++  }
++
++  NSUInteger removeCount = messages.count - maxTotal;
++  [messages removeObjectsInRange:NSMakeRange(start, removeCount)];
++}
++
 +static NSString *OnDeviceAgentJSONStringFromObject(id obj)
 +{
 +  if (obj == nil) {
@@ -1032,8 +1054,12 @@ index ad2ff455..7e078ac0 100644
 +    return NO;
 +  }
 +  return [k isEqualToString:@"authorization"] ||
++         [k isEqualToString:@"x-ondevice-agent-token"] ||
 +         [k isEqualToString:@"api_key"] ||
 +         [k isEqualToString:@"apikey"] ||
++         [k isEqualToString:@"agent_token"] ||
++         [k isEqualToString:@"agenttoken"] ||
++         [k isEqualToString:@"ondevice_agent_token"] ||
 +         [k hasSuffix:@"_api_key"];
 +}
 +
@@ -1579,74 +1605,114 @@ index ad2ff455..7e078ac0 100644
 +    @"今天的日期是：{{DATE_ZH}}\n"
 +    @"\n"
 +    @"你是一个运行在 iPhone 上的 UI 自动化智能体。\n"
-+    @"你会在每一步收到：任务描述、当前屏幕截图，以及 Screen Info（JSON）。你需要决定下一步 UI 操作来完成任务。\n"
++    @"每一步你会收到：任务、当前屏幕截图、屏幕信息（Screen Info，JSON）。请基于当前屏幕选择下一步操作，直到完成任务。\n"
 +    @"\n";
 +
 +  static NSString *const kOnDeviceAgentSystemPromptOutputFormat =
-+    @"【输出格式】\n"
-+    @"- 只输出 1 个 JSON 对象，且整个回复必须是这个 JSON（不要有任何额外字符/解释/Markdown/代码块）。\n"
-+    @"- JSON 必须包含字符串字段 \"think\"，以及对象字段 \"action\"。\n"
-+    @"- \"action\" 必须是一个对象：{\"name\": \"Tap\", \"params\": {...}}。\n"
-+    @"- \"action.name\" 必须是字符串；动作参数必须放在 \"action.params\" 中，不要把参数放到顶层。\n"
-+    @"- 不要把 \"action\" 写成字符串。\n"
++    @"【输出格式｜Response JSON】\n"
++    @"下面是回复的硬性契约，用于保证可解析与可执行。\n"
++    @"- 整段回复必须是且仅是 1 个 JSON 对象（不要输出任何其它文本/解释/Markdown/代码块）。\n"
++    @"- JSON 必须包含字段：\n"
++    @"  - `think`：字符串\n"
++    @"  - `plan`：数组（清单）\n"
++    @"  - `action`：对象\n"
++    @"- `action` 必须是对象：`{\"name\":\"...\", \"params\":{...}}`（不要把 `action` 写成字符串）。\n"
++    @"- `action.name` 必须是字符串；所有动作参数必须放在 `action.params` 中（不要放到顶层）。\n"
++    @"- `action.params` 必须是对象；没有参数时也要给 `{}`。\n"
 +    @"\n";
 +
 +  static NSString *const kOnDeviceAgentSystemPromptPlan =
-+    @"【计划】\n"
-+    @"你必须维护一个 checklist（字段 \"plan\"）来推进长任务。\n"
-+    @"- 第 0 步：输出 \"plan\" 数组，每项 {\"text\":\"...\",\"done\":true/false}。\n"
-+    @"- 后续步骤：继续输出 \"plan\" 并更新 done；必要时可增删，但保持精简（<=12 项）。\n"
++    @"【计划｜plan】\n"
++    @"你必须维护一个清单（字段 `plan`）来推进长任务。\n"
++    @"- 第 0 步：先输出 `plan` 数组，每项为 `{\"text\":\"...\",\"done\":true/false}`。\n"
++    @"- 后续每一步：继续输出 `plan`（可原样输出），并按进度更新 `done`。\n"
++    @"- 尽量只追加新条目（不要随意删除/重排），避免长任务中丢失进度。\n"
++    @"- 对“批量写入/多条提交”类的大项：只有在写入结果已可验证（例如回到列表/总览页可见）后，才将其标记为 `done=true`。\n"
++    @"- 清单可包含更多条目（<=50 项）。如果需要记录更多细节，请写入 Notes。\n"
 +    @"\n";
 +
 +  static NSString *const kOnDeviceAgentSystemPromptNote =
-+    @"【工作记忆】\n"
-+    @"- Note 会在后续每一步提供给你；在开始一个新任务的时候会自动清空。\n"
-+    @"- 用 Note 动作覆盖写入（不是追加；你可以自由重写/整理/压缩）。\n"
-+    @"- 适合记录：要填写到表格的文字、已收集列表、账号/链接、统计结果等。\n"
-+    @"- 不要滥用：只有当 Notes 需要更新时才使用 Note。\n"
++    @"【工作记忆｜Notes】\n"
++    @"Notes 用来保存你已确认的中间事实与阶段性结果，避免长任务跑偏。\n"
++    @"- Notes 会在后续每一步提供给你；开始新任务时会自动清空。\n"
++    @"- 使用 Note 动作写入 Notes：覆盖写入（不是追加）；你可以自由重写/整理/压缩。\n"
++    @"- Notes 适合记录：要填写到表格的文字、已收集列表、账号/链接、统计结果等。\n"
++    @"- 批量写入/多条提交任务：请把 Notes 写成“账本（ledger）”，至少包含：目标条数、已确认写入（written）、待写入（pending）、最近一次可验证检查点（last_checkpoint）。\n"
++    @"  - written 只包含你已经在屏幕上确认“提交/保存成功”的条目；不确定就先 verify，不要直接加入。\n"
++    @"  - 写入前先查重：如果条目已在 written 中，必须跳过，不要重复写。\n"
++    @"- 只有在确实需要更新记忆/结果时才使用 Note。\n"
 +    @"- 只记录你从屏幕上看到/确认的事实；不要编造。\n"
 +    @"\n";
 +
++  static NSString *const kOnDeviceAgentSystemPromptBulkWrite =
++    @"【幂等批量写入｜Bulk Write】\n"
++    @"当任务涉及“多条写入/多次提交/不可逆操作”（例如向表格逐条录入、批量发送/发布等）时，请遵守：\n"
++    @"- Notes 请使用“账本（ledger）”格式，推荐包含：`target_count`、`written`、`pending`、`last_checkpoint`。\n"
++    @"- `written` 只记录你已在屏幕上确认“提交/保存成功”的条目；不确定时先 verify（回列表/总览确认）。\n"
++    @"- 写入前先查重：若条目已在 `written` 中，必须跳过；不要重复写入。\n"
++    @"- 只有当 `written_count == target_count` 且完成一次可验证 checkpoint 后，才允许把“批量写入完成”对应的 plan 条目设为 `done=true`。\n"
++    @"- Finish 前必须 verify：回到列表/总览/搜索等可验证页面，确认 `written` 中的条目确实可见。\n"
++    @"\n";
++
 +  static NSString *const kOnDeviceAgentSystemPromptCoordinates =
-+    @"【坐标系】\n"
++    @"【坐标系｜Coordinates】\n"
++    @"下面定义所有坐标与手势参数的统一约定。\n"
 +    @"- 坐标为相对坐标：左上角 (0,0)，右下角 (1000,1000)。\n"
-+    @"- Tap/Double Tap/Long Press 使用 action.params.element:[x,y]。\n"
-+    @"- Swipe 使用 action.params.start:[x1,y1] 与 action.params.end:[x2,y2]。\n"
-+    @"- 如果 Swipe 看起来没生效，可以尝试将结束点延伸到 120% 距离处，以达到被操作 App 的 Swipe 操作判定条件。\n"
++    @"- Tap / Double Tap / Long Press：`action.params.element = [x,y]`\n"
++    @"- Swipe：`action.params.start = [x1,y1]`，`action.params.end = [x2,y2]`\n"
 +    @"\n";
 +
 +  static NSString *const kOnDeviceAgentSystemPromptActions =
-+    @"【可用动作】\n"
-+    @"- 以下示例仅展示 action 字段，实际输出仍必须包含 think/plan。\n"
++    @"【动作列表｜Actions】\n"
++    @"下面列出你可以输出的动作与参数示例（示例仅展示 `action` 字段；实际输出仍必须包含 `think` / `plan`）。\n"
 +    @"- Launch：启动/切换 App（优先使用）\n"
-+    @"  {\"action\":{\"name\":\"Launch\",\"params\":{\"app\":\"某 app 名称\"}}}\n"
-+    @"  或 {\"action\":{\"name\":\"Launch\",\"params\":{\"bundle_id\":\"com.xingin.discover\"}}}\n"
++    @"  `{\"action\":{\"name\":\"Launch\",\"params\":{\"app\":\"某 app 名称\"}}}`\n"
++    @"  或 `{\"action\":{\"name\":\"Launch\",\"params\":{\"bundle_id\":\"com.xingin.discover\"}}}`\n"
++    @"\n"
 +    @"- Tap：点击\n"
-+    @"  {\"action\":{\"name\":\"Tap\",\"params\":{\"element\":[x,y]}}}\n"
++    @"  `{\"action\":{\"name\":\"Tap\",\"params\":{\"element\":[x,y]}}}`\n"
++    @"\n"
 +    @"- Double Tap：双击\n"
-+    @"  {\"action\":{\"name\":\"Double Tap\",\"params\":{\"element\":[x,y]}}}\n"
++    @"  `{\"action\":{\"name\":\"Double Tap\",\"params\":{\"element\":[x,y]}}}`\n"
++    @"\n"
 +    @"- Long Press：长按\n"
-+    @"  {\"action\":{\"name\":\"Long Press\",\"params\":{\"element\":[x,y],\"seconds\":2}}}\n"
++    @"  `{\"action\":{\"name\":\"Long Press\",\"params\":{\"element\":[x,y],\"seconds\":2}}}`\n"
++    @"\n"
 +    @"- Type：向当前聚焦输入框输入文本（会自动清空原内容）\n"
-+    @"  {\"action\":{\"name\":\"Type\",\"params\":{\"text\":\"一段文本\"}}}\n"
-+    @"- Swipe：滑动\n"
-+    @"  {\"action\":{\"name\":\"Swipe\",\"params\":{\"start\":[x1,y1],\"end\":[x2,y2],\"seconds\":0.5}}}\n"
++    @"  `{\"action\":{\"name\":\"Type\",\"params\":{\"text\":\"一段文本\"}}}`\n"
++    @"\n"
++    @"- Swipe：滑动（如果滑动没生效，按下方“失败重试规则”立即重试一次）\n"
++    @"  `{\"action\":{\"name\":\"Swipe\",\"params\":{\"start\":[x1,y1],\"end\":[x2,y2],\"seconds\":0.5}}}`\n"
++    @"\n"
 +    @"- Back：返回/关闭（iOS 手势）\n"
-+    @"  {\"action\":{\"name\":\"Back\",\"params\":{}}}\n"
++    @"  `{\"action\":{\"name\":\"Back\",\"params\":{}}}`\n"
++    @"\n"
 +    @"- Home：回到桌面\n"
-+    @"  {\"action\":{\"name\":\"Home\",\"params\":{}}}\n"
++    @"  `{\"action\":{\"name\":\"Home\",\"params\":{}}}`\n"
++    @"\n"
 +    @"- Wait：等待页面稳定\n"
-+    @"  {\"action\":{\"name\":\"Wait\",\"params\":{\"seconds\":1}}}\n"
-+    @"- Note：写入 Working Notes（覆盖）\n"
-+    @"  {\"action\":{\"name\":\"Note\",\"params\":{\"message\":\"...\"}}}\n"
++    @"  `{\"action\":{\"name\":\"Wait\",\"params\":{\"seconds\":1}}}`\n"
++    @"\n"
++    @"- Note：写入 Notes（覆盖）\n"
++    @"  `{\"action\":{\"name\":\"Note\",\"params\":{\"message\":\"...\"}}}`\n"
++    @"\n"
 +    @"- Finish：结束任务\n"
-+    @"  {\"action\":{\"name\":\"Finish\",\"params\":{\"message\":\"...\"}}}\n"
++    @"  `{\"action\":{\"name\":\"Finish\",\"params\":{\"message\":\"...\"}}}`\n"
++    @"\n";
++
++  static NSString *const kOnDeviceAgentSystemPromptRetry =
++    @"【失败重试规则｜Retry】\n"
++    @"下面是常见“看起来没生效”的动作重试策略。\n"
++    @"- 当 Swipe 没生效（例如页面没滚动/棋子没移动/没有触发切换）：立刻重试一次，把终点沿同方向延伸到 120% 距离（保持起点不变）。\n"
++    @"- 当 Tap 没生效（例如按钮未响应/页面无变化）：先 Wait 0.5–1 秒，再 Tap 一次。\n"
 +    @"\n";
 +
 +  static NSString *const kOnDeviceAgentSystemPromptPolicy =
-+    @"【行为规范】\n"
++    @"【行为规范｜Policy】\n"
++    @"下面是安全与可信性的最低要求。\n"
 +    @"- 不要声称你已经“填写/发送/提交/记录”，除非你在屏幕上看到了结果。\n"
-+    @"- 遇到登录/验证码/权限弹窗等无法继续的情况，请用 Finish 说明需要用户协助。\n"
++    @"- 当你认为“任务已完成”时：先做一次可验证检查（回到列表/总览/搜索结果确认结果可见），再 Finish。\n"
++    @"- 遇到登录/验证码/权限弹窗等无法继续的情况：请用 Finish 说明需要用户协助，不要猜测性操作。\n"
 +    @"- 不要输出未在上面列出的 action。\n";
 +
 +  static NSString *prompt = nil;
@@ -1657,8 +1723,10 @@ index ad2ff455..7e078ac0 100644
 +      kOnDeviceAgentSystemPromptOutputFormat,
 +      kOnDeviceAgentSystemPromptPlan,
 +      kOnDeviceAgentSystemPromptNote,
++      kOnDeviceAgentSystemPromptBulkWrite,
 +      kOnDeviceAgentSystemPromptCoordinates,
 +      kOnDeviceAgentSystemPromptActions,
++      kOnDeviceAgentSystemPromptRetry,
 +      kOnDeviceAgentSystemPromptPolicy,
 +    ] componentsJoinedByString:@""];
 +  });
@@ -1882,6 +1950,30 @@ index ad2ff455..7e078ac0 100644
 +      appName];
 +  }
 +  if ([k isEqualToString:kOnDeviceAgentErrorKindInvalidParams]) {
++    NSDictionary *actionObj = [action[@"action"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)action[@"action"] : @{};
++    NSString *name = [actionObj[@"name"] isKindOfClass:NSString.class] ? OnDeviceAgentNormalizeActionName((NSString *)actionObj[@"name"]) : @"";
++    NSDictionary *params = [actionObj[@"params"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)actionObj[@"params"] : @{};
++    if ([name isEqualToString:@"launch"]) {
++      NSString *bundleId = nil;
++      if ([params[@"bundle_id"] isKindOfClass:NSString.class]) {
++        bundleId = params[@"bundle_id"];
++      } else if ([params[@"bundleId"] isKindOfClass:NSString.class]) {
++        bundleId = params[@"bundleId"];
++      } else if ([params[@"bundleID"] isKindOfClass:NSString.class]) {
++        bundleId = params[@"bundleID"];
++      }
++      bundleId = OnDeviceAgentTrim(bundleId ?: @"");
++      if (bundleId.length > 0) {
++        if (errMsg.length == 0) {
++          errMsg = @"参数不合法";
++        }
++        return [NSString stringWithFormat:
++          @"Launch(bundle_id=\"%@\") 失败：系统找不到该 bundle_id（可能未安装或 bundle_id 错误）。\n"
++          @"不要猜 bundle_id。请改用 Launch(app=\"应用名\")，或用系统 UI 搜索打开：Home → Spotlight（桌面下滑）/App 资源库 → 点搜索框 → Type 输入 App 名 → Tap 搜索结果打开。\n"
++          @"原始错误：%@",
++          bundleId, errMsg];
++      }
++    }
 +    if (errMsg.length == 0) {
 +      errMsg = @"参数不合法";
 +    }
@@ -2054,6 +2146,7 @@ index ad2ff455..7e078ac0 100644
 +@property (nonatomic, copy) NSString *text;
 +@property (nonatomic, copy) NSString *contentType;
 +@property (nonatomic, assign) NSInteger statusCode;
++@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
 +@end
 +
 +@implementation OnDeviceAgentTextPayload
@@ -2065,6 +2158,19 @@ index ad2ff455..7e078ac0 100644
 +    _text = [text copy] ?: @"";
 +    _contentType = [contentType copy] ?: @"text/plain;charset=UTF-8";
 +    _statusCode = statusCode;
++    _headers = @{};
++  }
++  return self;
++}
++
++- (instancetype)initWithText:(NSString *)text
++                 contentType:(NSString *)contentType
++                  statusCode:(NSInteger)statusCode
++                     headers:(NSDictionary<NSString *, NSString *> *)headers
++{
++  self = [self initWithText:text contentType:contentType statusCode:statusCode];
++  if (self) {
++    _headers = [headers isKindOfClass:NSDictionary.class] ? [headers copy] : @{};
 +  }
 +  return self;
 +}
@@ -2072,6 +2178,13 @@ index ad2ff455..7e078ac0 100644
 +- (void)dispatchWithResponse:(RouteResponse *)response
 +{
 +  [response setHeader:@"Content-Type" value:self.contentType];
++  for (NSString *k in self.headers) {
++    NSString *v = self.headers[k];
++    if (k.length == 0 || v.length == 0) {
++      continue;
++    }
++    [response setHeader:k value:v];
++  }
 +  [response setStatusCode:self.statusCode];
 +  [response respondWithString:self.text encoding:NSUTF8StringEncoding];
 +}
@@ -2081,6 +2194,7 @@ index ad2ff455..7e078ac0 100644
 +@interface OnDeviceAgentJSONPayload : NSObject <FBResponsePayload>
 +@property (nonatomic, copy) NSDictionary *object;
 +@property (nonatomic, assign) NSInteger statusCode;
++@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
 +@end
 +
 +@implementation OnDeviceAgentJSONPayload
@@ -2091,6 +2205,16 @@ index ad2ff455..7e078ac0 100644
 +  if (self) {
 +    _object = [object isKindOfClass:NSDictionary.class] ? [object copy] : @{};
 +    _statusCode = statusCode;
++    _headers = @{};
++  }
++  return self;
++}
++
++- (instancetype)initWithObject:(NSDictionary *)object statusCode:(NSInteger)statusCode headers:(NSDictionary<NSString *, NSString *> *)headers
++{
++  self = [self initWithObject:object statusCode:statusCode];
++  if (self) {
++    _headers = [headers isKindOfClass:NSDictionary.class] ? [headers copy] : @{};
 +  }
 +  return self;
 +}
@@ -2098,6 +2222,13 @@ index ad2ff455..7e078ac0 100644
 +- (void)dispatchWithResponse:(RouteResponse *)response
 +{
 +  [response setHeader:@"Content-Type" value:@"application/json;charset=UTF-8"];
++  for (NSString *k in self.headers) {
++    NSString *v = self.headers[k];
++    if (k.length == 0 || v.length == 0) {
++      continue;
++    }
++    [response setHeader:k value:v];
++  }
 +  [response setStatusCode:self.statusCode];
 +  NSError *error = nil;
 +  NSData *data = [NSJSONSerialization dataWithJSONObject:self.object options:0 error:&error];
@@ -2488,6 +2619,36 @@ index ad2ff455..7e078ac0 100644
 +  return @"";
 +}
 +
++static NSString *OnDeviceAgentAgentTokenCookieHeaderValue(NSString *token)
++{
++  NSString *t = OnDeviceAgentTrim(token ?: @"");
++  if (t.length == 0) {
++    return @"";
++  }
++  NSString *encoded = [t stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
++  if (encoded.length == 0) {
++    encoded = t;
++  }
++  // Session cookie (no Expires/Max-Age). HttpOnly prevents JS access; SameSite=Strict reduces cross-site leakage.
++  return [NSString stringWithFormat:@"%@=%@; Path=/agent; SameSite=Strict; HttpOnly", kOnDeviceAgentAgentTokenCookieName, encoded];
++}
++
++static NSString *OnDeviceAgentGenerateAgentToken(void)
++{
++  uint8_t bytes[16] = {0};
++  OSStatus rc = SecRandomCopyBytes(kSecRandomDefault, sizeof(bytes), bytes);
++  if (rc != errSecSuccess) {
++    NSString *uuid = [[NSUUID UUID].UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
++    return OnDeviceAgentTrim(uuid ?: @"");
++  }
++
++  NSMutableString *hex = [NSMutableString stringWithCapacity:32];
++  for (NSInteger i = 0; i < 16; i++) {
++    [hex appendFormat:@"%02x", bytes[i]];
++  }
++  return hex.copy;
++}
++
 +typedef NS_OPTIONS(NSUInteger, OnDeviceAgentTokenSources) {
 +  OnDeviceAgentTokenSourceHeader = 1 << 0,
 +  OnDeviceAgentTokenSourceQuery = 1 << 1,
@@ -2567,7 +2728,12 @@ index ad2ff455..7e078ac0 100644
 +
 +static BOOL OnDeviceAgentAuthorizeAgentRoute(FBRouteRequest *request, NSString **outMessage)
 +{
-+  return OnDeviceAgentAuthorizeAgentRouteWithSources(request, OnDeviceAgentTokenSourceHeader, outMessage);
++  // Accept both explicit header token (Console/tools) and HttpOnly cookie token (Runner web UI).
++  return OnDeviceAgentAuthorizeAgentRouteWithSources(
++    request,
++    OnDeviceAgentTokenSourceHeader | OnDeviceAgentTokenSourceCookie,
++    outMessage
++  );
 +}
 +
 +static BOOL OnDeviceAgentAuthorizeAgentPageRoute(FBRouteRequest *request, NSString **outMessage)
@@ -2597,6 +2763,7 @@ index ad2ff455..7e078ac0 100644
 +@property (nonatomic, copy) NSString *previousResponseId;
 +@property (nonatomic, copy) NSArray<NSDictionary *> *planChecklist;
 +@property (atomic, copy) NSString *workingNote;
++@property (atomic, copy) NSString *pendingRestartHintText;
 +
 +@property (atomic, assign) long long usageRequests;
 +@property (atomic, assign) long long usageInputTokens;
@@ -2604,6 +2771,36 @@ index ad2ff455..7e078ac0 100644
 +@property (atomic, assign) long long usageCachedTokens;
 +@property (atomic, assign) long long usageTotalTokens;
 +@end
++
++static NSString *OnDeviceAgentNormalizePlanItemTextKey(NSString *text)
++{
++  NSString *raw = OnDeviceAgentTrim(text ?: @"").lowercaseString;
++  if (raw.length == 0) {
++    return @"";
++  }
++
++  NSMutableString *buf = [NSMutableString stringWithCapacity:raw.length];
++  NSCharacterSet *letters = NSCharacterSet.letterCharacterSet;
++  NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
++
++  for (NSUInteger i = 0; i < raw.length; i++) {
++    unichar ch = [raw characterAtIndex:i];
++    if ([letters characterIsMember:ch] || [digits characterIsMember:ch]) {
++      [buf appendFormat:@"%C", ch];
++    }
++  }
++  return buf.copy;
++}
++
++static NSString *OnDeviceAgentGeneratePlanItemId(void)
++{
++  NSString *uuid = [[NSUUID UUID].UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
++  uuid = OnDeviceAgentTrim(uuid ?: @"");
++  if (uuid.length >= 12) {
++    return [uuid substringToIndex:12];
++  }
++  return uuid.length > 0 ? uuid : @"plan";
++}
 +
 +@implementation OnDeviceAgent
 +
@@ -2621,6 +2818,7 @@ index ad2ff455..7e078ac0 100644
 +  _stopRequested = NO;
 +  _planChecklist = @[];
 +  _workingNote = @"";
++  _pendingRestartHintText = @"";
 +
 +  NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
 +  cfg.timeoutIntervalForRequest = OnDeviceAgentParseDouble(config[kOnDeviceAgentTimeoutSecondsKey], kOnDeviceAgentDefaultTimeoutSeconds);
@@ -2630,6 +2828,59 @@ index ad2ff455..7e078ac0 100644
 +  _previousResponseId = @"";
 +
 +  return self;
++}
++
++- (NSString *)firstNewlyCompletedPlanItemTextFromOldPlan:(NSArray<NSDictionary *> *)oldPlan newPlan:(NSArray<NSDictionary *> *)newPlan
++{
++  if (oldPlan.count == 0 || newPlan.count == 0) {
++    return @"";
++  }
++
++  // Prefer id-based matching, then normalized-text matching.
++  NSMutableDictionary<NSString *, NSNumber *> *oldDoneById = [NSMutableDictionary dictionary];
++  NSMutableDictionary<NSString *, NSNumber *> *oldDoneByKey = [NSMutableDictionary dictionary];
++  for (id item in oldPlan) {
++    if (![item isKindOfClass:NSDictionary.class]) {
++      continue;
++    }
++    NSDictionary *d = (NSDictionary *)item;
++    NSString *pid = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"id"]));
++    NSString *text = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"text"]));
++    BOOL done = OnDeviceAgentParseBool(d[@"done"], NO);
++    if (pid.length > 0) {
++      oldDoneById[pid] = @(done);
++    }
++    NSString *key = OnDeviceAgentNormalizePlanItemTextKey(text);
++    if (key.length > 0 && oldDoneByKey[key] == nil) {
++      oldDoneByKey[key] = @(done);
++    }
++  }
++
++  for (id item in newPlan) {
++    if (![item isKindOfClass:NSDictionary.class]) {
++      continue;
++    }
++    NSDictionary *d = (NSDictionary *)item;
++    BOOL newDone = OnDeviceAgentParseBool(d[@"done"], NO);
++    if (!newDone) {
++      continue;
++    }
++    NSString *pid = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"id"]));
++    NSString *text = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"text"]));
++    BOOL oldDone = NO;
++    if (pid.length > 0 && oldDoneById[pid] != nil) {
++      oldDone = OnDeviceAgentParseBool(oldDoneById[pid], NO);
++    } else {
++      NSString *key = OnDeviceAgentNormalizePlanItemTextKey(text);
++      if (key.length > 0 && oldDoneByKey[key] != nil) {
++        oldDone = OnDeviceAgentParseBool(oldDoneByKey[key], NO);
++      }
++    }
++    if (!oldDone && text.length > 0) {
++      return text;
++    }
++  }
++  return @"";
 +}
 +
 +- (void)emit:(NSString *)line
@@ -2759,13 +3010,20 @@ index ad2ff455..7e078ac0 100644
 +      if (t.length == 0) {
 +        continue;
 +      }
-+      [out addObject:@{@"text": t, @"done": @NO}];
++      [out addObject:@{@"id": @"", @"text": t, @"done": @NO}];
 +      continue;
 +    }
 +    if (![item isKindOfClass:NSDictionary.class]) {
 +      continue;
 +    }
 +    NSDictionary *d = (NSDictionary *)item;
++    NSString *pid = @"";
++    if ([d[@"id"] isKindOfClass:NSString.class]) {
++      pid = OnDeviceAgentTrim((NSString *)d[@"id"]);
++      if (pid.length > 64) {
++        pid = [pid substringToIndex:64];
++      }
++    }
 +    NSString *text = @"";
 +    if ([d[@"text"] isKindOfClass:NSString.class]) {
 +      text = OnDeviceAgentTrim((NSString *)d[@"text"]);
@@ -2776,16 +3034,139 @@ index ad2ff455..7e078ac0 100644
 +      continue;
 +    }
 +    BOOL done = OnDeviceAgentParseBool(d[@"done"], NO);
-+    [out addObject:@{@"text": text, @"done": @(done)}];
++    [out addObject:@{@"id": pid ?: @"", @"text": text, @"done": @(done)}];
 +  }
 +
 +  if (out.count == 0) {
 +    return nil;
 +  }
-+  if (out.count > 12) {
-+    return [out subarrayWithRange:NSMakeRange(0, 12)];
++  if (out.count > 50) {
++    return [out subarrayWithRange:NSMakeRange(0, 50)];
 +  }
 +  return out.copy;
++}
++
++- (NSArray<NSDictionary *> *)mergePlanChecklistMonotonic:(NSArray<NSDictionary *> *)oldPlan newPlan:(NSArray<NSDictionary *> *)newPlan
++{
++  if (![oldPlan isKindOfClass:NSArray.class] || oldPlan.count == 0) {
++    return newPlan;
++  }
++  if (![newPlan isKindOfClass:NSArray.class] || newPlan.count == 0) {
++    return oldPlan;
++  }
++
++  NSMutableDictionary<NSString *, NSDictionary *> *newById = [NSMutableDictionary dictionary];
++  NSMutableDictionary<NSString *, NSDictionary *> *newByKey = [NSMutableDictionary dictionary];
++  NSMutableSet<NSNumber *> *matchedNewIndexes = [NSMutableSet set];
++
++  for (NSUInteger i = 0; i < newPlan.count; i++) {
++    id item = newPlan[i];
++    if (![item isKindOfClass:NSDictionary.class]) {
++      continue;
++    }
++    NSDictionary *d = (NSDictionary *)item;
++    NSString *pid = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"id"]));
++    NSString *text = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"text"]));
++    if (pid.length > 0) {
++      newById[pid] = @{@"idx": @(i), @"item": d};
++    }
++    NSString *key = OnDeviceAgentNormalizePlanItemTextKey(text);
++    if (key.length > 0 && newByKey[key] == nil) {
++      newByKey[key] = @{@"idx": @(i), @"item": d};
++    }
++  }
++
++  NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
++  for (id item in oldPlan) {
++    if (![item isKindOfClass:NSDictionary.class]) {
++      continue;
++    }
++    NSDictionary *old = (NSDictionary *)item;
++    NSString *oldId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(old[@"id"]));
++    NSString *oldText = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(old[@"text"]));
++    if (oldText.length == 0) {
++      continue;
++    }
++    BOOL oldDone = OnDeviceAgentParseBool(old[@"done"], NO);
++
++    NSDictionary *match = nil;
++    if (oldId.length > 0 && newById[oldId] != nil) {
++      match = newById[oldId];
++    } else {
++      NSString *key = OnDeviceAgentNormalizePlanItemTextKey(oldText);
++      if (key.length > 0 && newByKey[key] != nil) {
++        match = newByKey[key];
++      }
++    }
++
++    if (match != nil) {
++      NSNumber *idx = match[@"idx"];
++      NSDictionary *n = [match[@"item"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)match[@"item"] : @{};
++      if ([idx isKindOfClass:NSNumber.class]) {
++        [matchedNewIndexes addObject:idx];
++      }
++      BOOL newDone = OnDeviceAgentParseBool(n[@"done"], NO);
++      NSString *newText = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(n[@"text"]));
++      NSString *mergedId = oldId.length > 0 ? oldId : OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(n[@"id"]));
++      if (mergedId.length == 0) {
++        mergedId = OnDeviceAgentGeneratePlanItemId();
++      }
++      // Keep the existing text stable to reduce accidental "rephrase = new item".
++      NSString *mergedText = oldText.length > 0 ? oldText : newText;
++      [out addObject:@{@"id": mergedId, @"text": mergedText, @"done": @(oldDone || newDone)}];
++      continue;
++    }
++
++    NSString *mergedId = oldId.length > 0 ? oldId : OnDeviceAgentGeneratePlanItemId();
++    [out addObject:@{@"id": mergedId, @"text": oldText, @"done": @(oldDone)}];
++  }
++
++  for (NSUInteger i = 0; i < newPlan.count; i++) {
++    if ([matchedNewIndexes containsObject:@(i)]) {
++      continue;
++    }
++    id item = newPlan[i];
++    if (![item isKindOfClass:NSDictionary.class]) {
++      continue;
++    }
++    NSDictionary *d = (NSDictionary *)item;
++    NSString *text = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"text"]));
++    if (text.length == 0) {
++      continue;
++    }
++    BOOL done = OnDeviceAgentParseBool(d[@"done"], NO);
++    NSString *pid = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(d[@"id"]));
++    if (pid.length == 0) {
++      pid = OnDeviceAgentGeneratePlanItemId();
++    }
++    [out addObject:@{@"id": pid, @"text": text, @"done": @(done)}];
++  }
++
++  if (out.count == 0) {
++    return nil;
++  }
++  if (out.count > 50) {
++    return [out subarrayWithRange:NSMakeRange(0, 50)];
++  }
++  return out.copy;
++}
++
++- (NSInteger)doneCountForPlan:(NSArray<NSDictionary *> *)plan
++{
++  if (![plan isKindOfClass:NSArray.class]) {
++    return 0;
++  }
++  NSInteger count = 0;
++  for (id item in plan) {
++    if (![item isKindOfClass:NSDictionary.class]) {
++      continue;
++    }
++    NSDictionary *d = (NSDictionary *)item;
++    if (OnDeviceAgentParseBool(d[@"done"], NO)) {
++      count += 1;
++    }
++  }
++  return count;
 +}
 +
 +- (NSString *)planChecklistText
@@ -2799,11 +3180,16 @@ index ad2ff455..7e078ac0 100644
 +  NSInteger idx = 1;
 +  for (NSDictionary *it in plan) {
 +    NSString *text = [it[@"text"] isKindOfClass:NSString.class] ? (NSString *)it[@"text"] : @"";
++    NSString *pid = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(it[@"id"]));
 +    BOOL done = OnDeviceAgentParseBool(it[@"done"], NO);
 +    if (text.length == 0) {
 +      continue;
 +    }
-+    [s appendFormat:@"%ld. [%@] %@\n", (long)idx, done ? @"x" : @" ", text];
++    if (pid.length > 0) {
++      [s appendFormat:@"%ld. [%@] [id:%@] %@\n", (long)idx, done ? @"x" : @" ", pid, text];
++    } else {
++      [s appendFormat:@"%ld. [%@] %@\n", (long)idx, done ? @"x" : @" ", text];
++    }
 +    idx += 1;
 +  }
 +  return s.copy;
@@ -3614,7 +4000,14 @@ index ad2ff455..7e078ac0 100644
 +    } @catch (NSException *exception) {
 +      ok = NO;
 +      NSString *reason = exception.reason ?: @"Unknown exception";
-+      innerErr = [NSError errorWithDomain:@"OnDeviceAgent" code:11 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Exception while executing action '%@': %@", actionName, reason]}];
++      NSMutableDictionary *ui = [NSMutableDictionary dictionary];
++      ui[NSLocalizedDescriptionKey] = [NSString stringWithFormat:@"Exception while executing action '%@': %@", actionName, reason];
++      // Launch exceptions are commonly caused by an invalid/unknown bundle_id. Treat as recoverable so the model
++      // can fall back to Launch(app=...) or use Spotlight search.
++      if ([actionName isEqualToString:@"launch"]) {
++        ui[kOnDeviceAgentErrorKindKey] = kOnDeviceAgentErrorKindInvalidParams;
++      }
++      innerErr = [NSError errorWithDomain:@"OnDeviceAgent" code:11 userInfo:ui.copy];
 +    }
 +  });
 +
@@ -3640,6 +4033,8 @@ index ad2ff455..7e078ac0 100644
 +    apiMode = kOnDeviceAgentApiModeResponses;
 +  }
 +  BOOL useResponses = [apiMode isEqualToString:kOnDeviceAgentApiModeResponses];
++  BOOL restartByPlanEnabled = useResponses && OnDeviceAgentParseBool(self.config[kOnDeviceAgentRestartResponsesByPlanKey], NO);
++  BOOL restartResponsesChainNextStep = NO;
 +
 +  [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"starting", nil, @{
 +    @"max_steps": @(maxSteps),
@@ -3674,6 +4069,14 @@ index ad2ff455..7e078ac0 100644
 +        self.finish(NO, @"Stopped");
 +      }
 +      return;
++    }
++
++    BOOL restartedThisStep = NO;
++    if (restartByPlanEnabled && restartResponsesChainNextStep) {
++      restartResponsesChainNextStep = NO;
++      self.previousResponseId = @"";
++      restartedThisStep = YES;
++      [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"responses_chain_restarted", nil, @{@"step": @(step)})];
 +    }
 +
 +    NSData *png = [self takeScreenshotPNG];
@@ -3718,10 +4121,22 @@ index ad2ff455..7e078ac0 100644
 +        }
 +        [prefix appendString:noteText];
 +      }
++      NSString *taskHeader = @"";
++      if (restartedThisStep && task.length > 0) {
++        taskHeader = [NSString stringWithFormat:@"Task: %@\n\n", task];
++      }
++      NSString *restartHint = @"";
++      if (restartedThisStep) {
++        NSString *completed = OnDeviceAgentTrim(self.pendingRestartHintText ?: @"");
++        if (completed.length > 0) {
++          restartHint = [NSString stringWithFormat:@"继续：已完成「%@」。请从下一项开始；如当前界面无法验证结果，请先返回列表/总览确认再继续。\n\n", completed];
++          self.pendingRestartHintText = @"";
++        }
++      }
 +      if (prefix.length > 0) {
-+        textContent = [NSString stringWithFormat:@"%@\n\n** Screen Info **\n\n%@", prefix, screenInfo ?: @"{}"];
++        textContent = [NSString stringWithFormat:@"%@%@%@\n\n** Screen Info **\n\n%@", taskHeader, restartHint, prefix, screenInfo ?: @"{}"];
 +      } else {
-+        textContent = [NSString stringWithFormat:@"** Screen Info **\n\n%@", screenInfo ?: @"{}"];
++        textContent = [NSString stringWithFormat:@"%@%@** Screen Info **\n\n%@", taskHeader, restartHint, screenInfo ?: @"{}"];
 +      }
 +      }
 +
@@ -3734,6 +4149,7 @@ index ad2ff455..7e078ac0 100644
 +        };
 +        if (!useResponses) {
 +          [self.context addObject:chatUserMessage];
++          OnDeviceAgentTrimChatCompletionsContextInPlace(self.context);
 +        }
 +
 +        NSArray<NSDictionary *> *responsesInput = nil;
@@ -3849,11 +4265,13 @@ index ad2ff455..7e078ac0 100644
 +    NSString *contentForParse = content;
 +    NSDictionary *action = nil;
 +    NSError *parseErr = nil;
++    NSInteger actionParseAttemptUsed = 0;
 +
 +    for (NSInteger attempt = 0; attempt <= maxActionRetries; attempt++) {
 +      parseErr = nil;
 +      action = [self parseActionFromModelText:contentForParse error:&parseErr];
 +      if (action != nil) {
++        actionParseAttemptUsed = attempt;
 +        break;
 +      }
 +
@@ -3872,11 +4290,11 @@ index ad2ff455..7e078ac0 100644
 +        NSString *fixText = [NSString stringWithFormat:
 +          @"你上一条输出无法解析为合法 JSON（错误：%@）。\n"
 +          @"请仅输出 1 个合法的 JSON 对象（不要输出任何多余文本、不要输出代码块）。\n"
-+          @"要求（必须严格遵守）：\n"
-+          @"- 顶层必须包含：\"think\"(string)、\"plan\"(array)、\"action\"(object)\n"
++          @"要求：\n"
++          @"- 顶层必须包含字段 \"action\"（object）\n"
 +          @"- \"action\" 结构必须是：{\"name\":\"Tap\",\"params\":{...}}\n"
 +          @"- \"action.name\" 必须是字符串；所有动作参数必须放到 \"action.params\"（不要放到顶层）\n"
-+          @"- 不要使用旧格式：{\"action\":\"Tap\",...} 或 {\"action\":{\"action\":\"Tap\",...}}\n"
++          @"- 不要输出或修改 plan（如果存在 plan，请留给下一轮正常输出）\n"
 +          @"并尽量保持与你上一条输出的意图一致。\n"
 +          @"上一条输出如下：\n%@",
 +          errMsg,
@@ -3994,9 +4412,29 @@ index ad2ff455..7e078ac0 100644
 +      return;
 +    }
 +
++    NSArray<NSDictionary *> *oldPlanChecklist = self.planChecklist;
++    NSInteger oldDoneCount = [self doneCountForPlan:oldPlanChecklist];
++    NSInteger newDoneCount = oldDoneCount;
++    BOOL planDoneCountIncreased = NO;
++    NSString *newlyCompletedPlanItemText = @"";
 +    NSArray<NSDictionary *> *newPlan = [self sanitizePlanChecklist:action[@"plan"]];
 +    if (newPlan != nil) {
-+      self.planChecklist = newPlan;
++      if (actionParseAttemptUsed > 0) {
++        [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"plan_update_ignored_repair_attempt", nil, @{
++          @"step": @(step),
++          @"attempt": @(actionParseAttemptUsed + 1),
++        })];
++      } else {
++        NSArray<NSDictionary *> *mergedPlan = [self mergePlanChecklistMonotonic:oldPlanChecklist newPlan:newPlan];
++        if (mergedPlan != nil) {
++          newDoneCount = [self doneCountForPlan:mergedPlan];
++          planDoneCountIncreased = newDoneCount > oldDoneCount;
++          if (planDoneCountIncreased) {
++            newlyCompletedPlanItemText = [self firstNewlyCompletedPlanItemTextFromOldPlan:oldPlanChecklist newPlan:mergedPlan] ?: @"";
++          }
++          self.planChecklist = mergedPlan;
++        }
++      }
 +    }
 +
 +    NSDictionary *actionObj = [action[@"action"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)action[@"action"] : nil;
@@ -4042,6 +4480,7 @@ index ad2ff455..7e078ac0 100644
 +      // Keep assistant history aligned even when the action fails.
 +      if (!useResponses) {
 +        [self.context addObject:@{@"role": @"assistant", @"content": OnDeviceAgentJSONStringFromObject(action) ?: @""}];
++        OnDeviceAgentTrimChatCompletionsContextInPlace(self.context);
 +      }
 +
 +      if (consecutiveRecoverableFailures >= kOnDeviceAgentRecoverableFailureLimit) {
@@ -4065,9 +4504,20 @@ index ad2ff455..7e078ac0 100644
 +    // Keep assistant history aligned with the JSON-only contract.
 +    if (!useResponses) {
 +      [self.context addObject:@{@"role": @"assistant", @"content": OnDeviceAgentJSONStringFromObject(action) ?: @""}];
++      OnDeviceAgentTrimChatCompletionsContextInPlace(self.context);
 +    }
 +    consecutiveRecoverableFailures = 0;
 +    lastRecoverableFailureText = @"";
++
++    if (restartByPlanEnabled && planDoneCountIncreased) {
++      restartResponsesChainNextStep = YES;
++      self.pendingRestartHintText = newlyCompletedPlanItemText ?: @"";
++      [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"responses_chain_restart_scheduled", nil, @{
++        @"step": @(step),
++        @"old_done": @(oldDoneCount),
++        @"new_done": @(newDoneCount),
++      })];
++    }
 +
 +    if (stepDelay > 0) {
 +      [NSThread sleepForTimeInterval:stepDelay];
@@ -4359,6 +4809,7 @@ index ad2ff455..7e078ac0 100644
 +    kOnDeviceAgentDebugLogRawAssistantKey,
 +    kOnDeviceAgentHalfResScreenshotKey,
 +    kOnDeviceAgentUseW3CActionsForSwipeKey,
++    kOnDeviceAgentRestartResponsesByPlanKey,
 +  ];
 +  for (NSString *k in keys) {
 +    [d removeObjectForKey:k];
@@ -4437,6 +4888,89 @@ index ad2ff455..7e078ac0 100644
 +  return [png base64EncodedStringWithOptions:0] ?: @"";
 +}
 +
++- (NSDictionary *)stepScreenshotsBase64WithSteps:(NSArray<NSNumber *> *)steps
++                                         limit:(NSInteger)limit
++                                        format:(NSString *)format
++                                       quality:(double)quality
++{
++  NSString *fmt = OnDeviceAgentTrim(format ?: @"").lowercaseString;
++  BOOL asJPEG = [fmt isEqualToString:@"jpeg"] || [fmt isEqualToString:@"jpg"];
++  NSString *mimeType = asJPEG ? @"image/jpeg" : @"image/png";
++  fmt = asJPEG ? @"jpeg" : @"png";
++
++  double q = quality;
++  if (!isfinite(q) || q <= 0 || q > 1) {
++    q = 0.7;
++  }
++
++  __block NSArray<NSNumber *> *wantSteps = nil;
++  __block NSMutableArray<NSDictionary *> *entries = nil;
++  dispatch_sync(self.stateQueue, ^{
++    NSArray<NSNumber *> *want = [steps isKindOfClass:NSArray.class] ? steps : @[];
++    if (want.count == 0) {
++      NSInteger lim = MAX(1, limit);
++      NSInteger n = (NSInteger)self.stepScreenshotOrder.count;
++      if (n <= 0) {
++        want = @[];
++      } else if (n > lim) {
++        want = [self.stepScreenshotOrder subarrayWithRange:NSMakeRange(n - lim, lim)];
++      } else {
++        want = self.stepScreenshotOrder.copy ?: @[];
++      }
++    }
++
++    wantSteps = want ?: @[];
++    entries = [NSMutableArray arrayWithCapacity:wantSteps.count];
++    for (NSNumber *k in wantSteps) {
++      if (![k isKindOfClass:NSNumber.class]) {
++        continue;
++      }
++      NSData *png = self.stepScreenshots[k];
++      if ([png isKindOfClass:NSData.class] && png.length > 0) {
++        [entries addObject:@{@"step": k, @"png": png}];
++      } else {
++        [entries addObject:@{@"step": k}];
++      }
++    }
++  });
++
++  NSMutableDictionary *images = [NSMutableDictionary dictionary];
++  NSMutableArray<NSNumber *> *missing = [NSMutableArray array];
++  for (NSDictionary *e in entries) {
++    NSNumber *step = [e[@"step"] isKindOfClass:NSNumber.class] ? (NSNumber *)e[@"step"] : nil;
++    NSData *png = [e[@"png"] isKindOfClass:NSData.class] ? (NSData *)e[@"png"] : nil;
++    if (step == nil || png == nil || png.length == 0) {
++      if (step != nil) {
++        [missing addObject:step];
++      }
++      continue;
++    }
++
++    NSData *out = png;
++    if (asJPEG) {
++      UIImage *img = [UIImage imageWithData:png];
++      NSData *jpeg = (img != nil) ? UIImageJPEGRepresentation(img, q) : nil;
++      if ([jpeg isKindOfClass:NSData.class] && jpeg.length > 0) {
++        out = jpeg;
++      }
++    }
++    NSString *b64 = [out base64EncodedStringWithOptions:0] ?: @"";
++    if (b64.length == 0) {
++      [missing addObject:step];
++      continue;
++    }
++    images[step.stringValue ?: @""] = b64;
++  }
++
++  return @{
++    @"ok": @YES,
++    @"format": fmt,
++    @"mime_type": mimeType,
++    @"images": images.copy ?: @{},
++    @"missing": missing.copy ?: @[],
++  };
++}
++
 +- (void)loadConfigFromDefaults
 +{
 +  NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
@@ -4492,6 +5026,8 @@ index ad2ff455..7e078ac0 100644
 +  BOOL halfRes = (halfResObj == nil) ? YES : [d boolForKey:kOnDeviceAgentHalfResScreenshotKey];
 +  id w3cSwipeObj = [d objectForKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
 +  BOOL w3cSwipe = (w3cSwipeObj == nil) ? YES : [d boolForKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
++  id restartObj = [d objectForKey:kOnDeviceAgentRestartResponsesByPlanKey];
++  BOOL restartByPlan = (restartObj == nil) ? NO : [d boolForKey:kOnDeviceAgentRestartResponsesByPlanKey];
 +
 +  self.config[kOnDeviceAgentTaskKey] = task;
 +  self.config[kOnDeviceAgentBaseURLKey] = baseURL;
@@ -4512,6 +5048,7 @@ index ad2ff455..7e078ac0 100644
 +  self.config[kOnDeviceAgentDebugLogRawAssistantKey] = @(debugRaw);
 +  self.config[kOnDeviceAgentHalfResScreenshotKey] = @(halfRes);
 +  self.config[kOnDeviceAgentUseW3CActionsForSwipeKey] = @(w3cSwipe);
++  self.config[kOnDeviceAgentRestartResponsesByPlanKey] = @(restartByPlan);
 +}
 +
 +- (void)persistConfigToDefaults
@@ -4572,6 +5109,7 @@ index ad2ff455..7e078ac0 100644
 +  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], NO) forKey:kOnDeviceAgentDebugLogRawAssistantKey];
 +  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], NO) forKey:kOnDeviceAgentHalfResScreenshotKey];
 +  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseW3CActionsForSwipeKey], YES) forKey:kOnDeviceAgentUseW3CActionsForSwipeKey];
++  [d setBool:OnDeviceAgentParseBool(self.config[kOnDeviceAgentRestartResponsesByPlanKey], NO) forKey:kOnDeviceAgentRestartResponsesByPlanKey];
 +  [d synchronize];
 +}
 +
@@ -4681,6 +5219,9 @@ index ad2ff455..7e078ac0 100644
 +  if ([args objectForKey:@"use_w3c_actions_for_swipe"] != nil) {
 +    next[kOnDeviceAgentUseW3CActionsForSwipeKey] = @(OnDeviceAgentParseBool(args[@"use_w3c_actions_for_swipe"], YES));
 +  }
++  if ([args objectForKey:@"restart_responses_by_plan"] != nil) {
++    next[kOnDeviceAgentRestartResponsesByPlanKey] = @(OnDeviceAgentParseBool(args[@"restart_responses_by_plan"], NO));
++  }
 +
 +  self.config = next.copy;
 +  [self persistConfigToDefaults];
@@ -4711,6 +5252,7 @@ index ad2ff455..7e078ac0 100644
 +  cfg[@"doubao_seed_enable_session_cache"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentDoubaoSeedEnableSessionCacheKey], YES));
 +  cfg[@"half_res_screenshot"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentHalfResScreenshotKey], YES));
 +  cfg[@"use_w3c_actions_for_swipe"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentUseW3CActionsForSwipeKey], YES));
++  cfg[@"restart_responses_by_plan"] = @(OnDeviceAgentParseBool(self.config[kOnDeviceAgentRestartResponsesByPlanKey], NO));
 +
 +  cfg[@"max_completion_tokens"] = @(OnDeviceAgentParseInt(self.config[kOnDeviceAgentMaxCompletionTokensKey], kOnDeviceAgentDefaultMaxCompletionTokens));
 +  cfg[@"max_steps"] = @(OnDeviceAgentParseInt(self.config[kOnDeviceAgentMaxStepsKey], kOnDeviceAgentDefaultMaxSteps));
@@ -4994,6 +5536,24 @@ index ad2ff455..7e078ac0 100644
 +    @"    .placeholder-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:start;margin-top:6px;}\n"
 +    @"    .placeholder-grid .ex{overflow-wrap:anywhere;word-break:break-word;}\n"
 +    @"    @media (max-width: 520px){.placeholder-grid{grid-template-columns:1fr;}}\n"
++    @"    button:disabled{opacity:0.55;}\n"
++    @"    .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}\n"
++    @"    .chip{font-size:12px;line-height:1.2;padding:5px 10px;border-radius:999px;border:1px solid var(--border);background:var(--card);}\n"
++    @"    .chip.ok{border-color:rgba(10,132,255,0.35);}\n"
++    @"    .chip.bad{border-color:rgba(255,59,48,0.35);color:var(--danger);}\n"
++    @"    .readiness-detail{white-space:pre-wrap;}\n"
++    @"    .chat{display:flex;flex-direction:column;gap:10px;}\n"
++    @"    .step-card{border:1px solid var(--border);background:var(--card);border-radius:var(--radius);overflow:hidden;}\n"
++    @"    .step-card > summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:600;}\n"
++    @"    .step-card > summary::-webkit-details-marker{display:none;}\n"
++    @"    .step-card[open] > summary{border-bottom:1px solid var(--border);}\n"
++    @"    .step-body{padding:10px 12px;display:flex;flex-direction:column;gap:10px;}\n"
++    @"    .shot{width:100%;border:1px solid var(--border);border-radius:var(--radius);display:block;}\n"
++    @"    .msg{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);padding:10px 10px;}\n"
++    @"    .msg-hdr{font-size:12px;color:var(--muted);margin-bottom:6px;display:flex;gap:8px;flex-wrap:wrap;}\n"
++    @"    .msg pre{background:transparent;border:0;padding:0;margin:0;max-height:none;overflow:visible;font-size:15px;line-height:1.35;}\n"
++    @"    details.raw > summary{cursor:pointer;color:var(--muted);font-size:12px;}\n"
++    @"    details.raw > pre{margin-top:8px;}\n"
 +    @"  </style>\n";
 +
 +  static NSString *const kOnDeviceAgentPageBody =
@@ -5006,6 +5566,21 @@ index ad2ff455..7e078ac0 100644
 +		    @"      <div data-i18n-html=\"intro_2\">If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.</div>\n"
 +		    @"      <div data-i18n-html=\"wireless_hint_short\">Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.</div>\n"
 +		    @"    </div>\n"
++        @"    <h3 data-i18n=\"h_access\">Access</h3>\n"
++        @"    <div class=\"callout\">\n"
++        @"      <div class=\"callout-row\">\n"
++        @"        <div class=\"callout-text\" data-i18n-html=\"help_agent_token\">Agent Token protects <code>/agent/*</code> over Wi‑Fi/LAN. Rotate it to invalidate existing sessions.</div>\n"
++        @"        <button type=\"button\" class=\"ghost callout-btn\" onclick=\"rotateToken()\" data-i18n=\"btn_rotate_token\">Rotate token</button>\n"
++        @"      </div>\n"
++        @"      <div id=\"rotate_token_row\" style=\"display:none;margin-top:10px\">\n"
++        @"        <label style=\"margin-top:0\" data-i18n=\"label_new_token\">New token</label>\n"
++        @"        <div style=\"display:flex;gap:8px;align-items:center;flex-wrap:wrap;\">\n"
++        @"          <input id=\"rotate_token_value\" class=\"mono\" readonly style=\"flex:1 1 240px;\" />\n"
++        @"          <button type=\"button\" class=\"ghost btn-sm\" onclick=\"copyRotatedToken()\" data-i18n=\"btn_copy\">Copy</button>\n"
++        @"        </div>\n"
++        @"        <div class=\"muted\" style=\"margin-top:6px\" data-i18n=\"help_new_token\">Keep this token secret. Anyone with it can access /agent/* over LAN.</div>\n"
++        @"      </div>\n"
++        @"    </div>\n"
 +	    @"    <label data-i18n=\"label_base_url\">Base URL (OpenAI-compatible)</label>\n"
 +    @"    <input id=\"base_url\" class=\"mono\" placeholder=\"https://...\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
 +    @"    <label data-i18n=\"label_model\">Model</label>\n"
@@ -5066,13 +5641,17 @@ index ad2ff455..7e078ac0 100644
 +    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"insecure_skip_tls_verify\" /> <span data-i18n=\"cb_insecure_skip_tls\">Insecure TLS (model requests only)</span></label>\n"
 +    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"half_res_screenshot\" /> <span data-i18n=\"cb_half_res_screenshot\">Half-resolution screenshots</span></label>\n"
 +    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"use_w3c_actions_for_swipe\" /> <span data-i18n=\"cb_use_w3c_actions_for_swipe\">Use W3C actions for swipe</span></label>\n"
++    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"restart_responses_by_plan\" /> <span data-i18n=\"cb_restart_responses_by_plan\">Restart history when a plan item completes (Responses)</span></label>\n"
 +    @"    <label class=\"check muted\"><input type=\"checkbox\" id=\"debug_log_raw_assistant\" /> <span data-i18n=\"cb_debug_raw\">Debug raw conversation (sensitive fields redacted)</span></label>\n"
 +    @"    <div id=\"form_error\" class=\"error\" style=\"display:none\"></div>\n"
++    @"    <div id=\"readiness\" class=\"chips\" style=\"display:none\"></div>\n"
++    @"    <div id=\"readiness_detail\" class=\"muted readiness-detail\" style=\"display:none\"></div>\n"
++    @"    <pre id=\"token_summary\" class=\"muted\" style=\"display:none\"></pre>\n"
 +    @"    <div class=\"actions\">\n"
-+    @"      <button class=\"primary\" onclick=\"saveCfg()\" data-i18n=\"btn_save\">Save</button>\n"
-+    @"      <button class=\"primary\" onclick=\"start()\" data-i18n=\"btn_start\">Start</button>\n"
-+    @"      <button class=\"danger\" onclick=\"stop()\" data-i18n=\"btn_stop\">Stop</button>\n"
-+    @"      <button class=\"ghost\" onclick=\"resetAll()\" data-i18n=\"btn_reset\">Reset</button>\n"
++    @"      <button id=\"btn_save\" class=\"primary\" onclick=\"saveCfg()\" data-i18n=\"btn_save\">Save</button>\n"
++    @"      <button id=\"btn_start\" class=\"primary\" onclick=\"start()\" data-i18n=\"btn_start\">Start</button>\n"
++    @"      <button id=\"btn_stop\" class=\"danger\" onclick=\"stop()\" data-i18n=\"btn_stop\">Stop</button>\n"
++    @"      <button id=\"btn_reset\" class=\"ghost\" onclick=\"resetAll()\" data-i18n=\"btn_reset\">Reset</button>\n"
 +    @"    </div>\n"
 +    @"    <h3 data-i18n=\"h_status\">Status</h3>\n"
 +    @"    <pre id=\"status\">Loading...</pre>\n"
@@ -5085,11 +5664,12 @@ index ad2ff455..7e078ac0 100644
 +    @"        <option value=\"structured\" data-i18n=\"opt_structured\">Structured</option>\n"
 +    @"        <option value=\"raw\" data-i18n=\"opt_raw\">Raw (request/response)</option>\n"
 +    @"      </select>\n"
++    @"      <label class=\"check muted\" style=\"margin-top:0\"><input type=\"checkbox\" id=\"chat_show_screenshots\" /> <span data-i18n=\"cb_show_screenshots\">Show screenshots</span></label>\n"
 +    @"      <span data-i18n=\"help_raw_view\">Raw shows per-turn API request/response JSON (history content omitted; images are placeholders).</span>\n"
 +    @"    </div>\n"
-+    @"    <pre id=\"chat\"></pre>\n"
++    @"    <div id=\"chat\" class=\"chat\"></div>\n"
 +    @"    <h3 data-i18n=\"h_logs\">Logs</h3>\n"
-+    @"    <pre id=\"logs\"></pre>\n"
++    @"    <div id=\"logs\" class=\"chat\"></div>\n"
 +    @"  </div>\n"
 +    @"  <script>\n";
 +
@@ -5103,6 +5683,12 @@ index ad2ff455..7e078ac0 100644
 +    @"        intro_1: 'This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).',\n"
 +    @"        intro_2: 'If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.',\n"
 +    @"        wireless_hint_short: 'Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.',\n"
++        @"        h_access: 'Access',\n"
++        @"        help_agent_token: 'Agent Token protects <code>/agent/*</code> over Wi‑Fi/LAN. Rotate it to invalidate existing sessions.',\n"
++        @"        btn_rotate_token: 'Rotate token',\n"
++        @"        label_new_token: 'New token',\n"
++        @"        help_new_token: 'Keep this token secret. Anyone with it can access /agent/* over LAN.',\n"
++        @"        btn_copy: 'Copy',\n"
 +    @"        label_base_url: 'Base URL (OpenAI-compatible)',\n"
 +    @"        label_model: 'Model',\n"
 +        @"        label_api_mode: 'API Mode',\n"
@@ -5133,6 +5719,7 @@ index ad2ff455..7e078ac0 100644
 +        @"        cb_insecure_skip_tls: 'Insecure TLS (model requests only; debug only; MITM risk)',\n"
 +        @"        cb_half_res_screenshot: 'Half-resolution screenshots',\n"
 +        @"        cb_use_w3c_actions_for_swipe: 'Use W3C actions for swipe',\n"
++        @"        cb_restart_responses_by_plan: 'Restart history when a plan item completes (Responses)',\n"
 +        @"        cb_debug_raw: 'Debug raw conversation (OFF by default; API key / Authorization / image base64 are redacted)',\n"
 +    @"        btn_save: 'Save',\n"
 +    @"        btn_start: 'Start',\n"
@@ -5144,8 +5731,26 @@ index ad2ff455..7e078ac0 100644
 +    @"        label_view: 'View:',\n"
 +    @"        opt_structured: 'Structured',\n"
 +    @"        opt_raw: 'Raw (request/response)',\n"
++    @"        cb_show_screenshots: 'Show screenshots',\n"
 +    @"        help_raw_view: 'Raw shows per-turn API request/response JSON (history content omitted; images are placeholders).',\n"
 +    @"        h_logs: 'Logs',\n"
++    @"        chip_runner_ok: 'Runner reachable',\n"
++    @"        chip_runner_bad: 'Runner unreachable',\n"
++    @"        chip_auth_ok: 'Auth OK',\n"
++    @"        chip_auth_bad: 'LAN requires token',\n"
++    @"        chip_config_ok: 'Config OK',\n"
++    @"        chip_config_bad: 'Config incomplete',\n"
++    @"        chip_key_ok: 'API key OK',\n"
++    @"        chip_key_bad: 'API key missing',\n"
++    @"        chip_running: 'Running',\n"
++    @"        chip_stopped: 'Stopped',\n"
++    @"        err_base_url_required: 'Base URL is required',\n"
++    @"        err_model_required: 'Model is required',\n"
++    @"        err_task_required: 'Task is required',\n"
++    @"        err_api_key_required: 'API Key is required',\n"
++    @"        err_agent_token_required: 'Agent Token is required for LAN access',\n"
++    @"        err_unauthorized: 'Unauthorized (missing/invalid Agent Token)',\n"
++    @"        err_network: 'Network error',\n"
 +    @"        err_max_steps_gt0: 'Max Steps must be > 0',\n"
 +    @"        err_timeout_gt0: 'Timeout (seconds) must be > 0',\n"
 +    @"        err_step_delay_gt0: 'Step Delay (seconds) must be > 0',\n"
@@ -5162,6 +5767,12 @@ index ad2ff455..7e078ac0 100644
 +    @"        intro_1: '此页面用于配置并启动一个运行在 <b>WebDriverAgentRunner (XCTest)</b> 内部的智能体。',\n"
 +    @"        intro_2: '如果局域网访问失败，请在 iPhone 上用 <code>http://127.0.0.1:8100/agent</code> 打开此页面。',\n"
 +    @"        wireless_hint_short: '提示：如果局域网不可达，请在 iPhone 设置中为 Runner 开启<b>无线数据</b>，然后重新打开 Runner。',\n"
++        @"        h_access: '访问控制',\n"
++        @"        help_agent_token: 'Agent Token 用于保护局域网中的 <code>/agent/*</code>。旋转 token 会使已存在的会话失效。',\n"
++        @"        btn_rotate_token: '旋转 token',\n"
++        @"        label_new_token: '新 token',\n"
++        @"        help_new_token: '请妥善保管。任何人拿到它都可以在局域网中访问 /agent/*。',\n"
++        @"        btn_copy: '复制',\n"
 +    @"        label_base_url: 'Base URL（OpenAI 兼容）',\n"
 +    @"        label_model: '模型',\n"
 +        @"        label_api_mode: 'API 模式',\n"
@@ -5192,6 +5803,7 @@ index ad2ff455..7e078ac0 100644
 +        @"        cb_insecure_skip_tls: '不安全 TLS（仅模型请求；仅调试；有中间人风险）',\n"
 +        @"        cb_half_res_screenshot: '半分辨率截图',\n"
 +        @"        cb_use_w3c_actions_for_swipe: 'Swipe 使用 W3C actions',\n"
++        @"        cb_restart_responses_by_plan: '计划项完成后重启对话历史（Responses）',\n"
 +        @"        cb_debug_raw: '调试：记录原始对话（默认关闭；API key / Authorization / 图片 base64 会脱敏）',\n"
 +    @"        btn_save: '保存',\n"
 +    @"        btn_start: '开始',\n"
@@ -5203,8 +5815,26 @@ index ad2ff455..7e078ac0 100644
 +    @"        label_view: '视图：',\n"
 +    @"        opt_structured: '结构化',\n"
 +    @"        opt_raw: '原始（请求/响应）',\n"
++    @"        cb_show_screenshots: '显示截图',\n"
 +    @"        help_raw_view: '原始视图显示每轮 API 请求/响应 JSON（历史内容省略；图片会用占位符）。',\n"
 +    @"        h_logs: '日志',\n"
++    @"        chip_runner_ok: 'Runner 可达',\n"
++    @"        chip_runner_bad: 'Runner 不可达',\n"
++    @"        chip_auth_ok: '已授权',\n"
++    @"        chip_auth_bad: '局域网需要 token',\n"
++    @"        chip_config_ok: '配置就绪',\n"
++    @"        chip_config_bad: '配置未完成',\n"
++    @"        chip_key_ok: '密钥就绪',\n"
++    @"        chip_key_bad: '缺少密钥',\n"
++    @"        chip_running: '运行中',\n"
++    @"        chip_stopped: '未运行',\n"
++    @"        err_base_url_required: 'Base URL 必填',\n"
++    @"        err_model_required: '模型必填',\n"
++    @"        err_task_required: '任务必填',\n"
++    @"        err_api_key_required: 'API 密钥必填',\n"
++    @"        err_agent_token_required: '局域网访问需要 Agent Token',\n"
++    @"        err_unauthorized: '未授权（Agent Token 缺失或无效）',\n"
++    @"        err_network: '网络错误',\n"
 +    @"        err_max_steps_gt0: '最大步数必须 > 0',\n"
 +    @"        err_timeout_gt0: '超时（秒）必须 > 0',\n"
 +    @"        err_step_delay_gt0: '步间延迟（秒）必须 > 0',\n"
@@ -5243,7 +5873,21 @@ index ad2ff455..7e078ac0 100644
 +    @"    }\n"
 +    @"    let dirty = false;\n"
 +    @"    let lastChatItems = [];\n"
++    @"    let lastLogLines = [];\n"
++    @"    let lastStatus = null;\n"
++    @"    let lastStatusError = '';\n"
++    @"    let lastStatusCode = 0;\n"
++    @"    let lastRunnerOk = false;\n"
++    @"    let lastRunnerError = '';\n"
 +    @"    let composing = false;\n"
++    @"    const shotCache = {};\n"
++    @"    const shotLoading = new Set();\n"
++    @"    let events = null;\n"
++    @"    let eventsReady = false;\n"
++    @"    let pollTimer = null;\n"
++    @"    let pendingAutoRefresh = false;\n"
++    @"    let lastTokenUsage = null;\n"
++    @"    const MAX_LOG_LINES = 2000;\n"
 +    @"    function setInvalid(el, on){\n"
 +    @"      if (!el || !el.classList) return;\n"
 +    @"      if (on) el.classList.add('invalid'); else el.classList.remove('invalid');\n"
@@ -5265,7 +5909,7 @@ index ad2ff455..7e078ac0 100644
 +    @"    }\n"
 +    @"    function clearFormError(){\n"
 +    @"      setFormError([]);\n"
-+    @"      for (const id of ['max_steps','timeout_seconds','step_delay_seconds','max_completion_tokens']){\n"
++    @"      for (const id of ['base_url','model','api_key','task','max_steps','timeout_seconds','step_delay_seconds','max_completion_tokens']){\n"
 +    @"        const el = document.getElementById(id);\n"
 +    @"        if (el) el.classList.remove('invalid');\n"
 +    @"      }\n"
@@ -5276,7 +5920,7 @@ index ad2ff455..7e078ac0 100644
 +    @"      const tag = el.tagName.toLowerCase();\n"
 +    @"      return tag === 'input' || tag === 'textarea';\n"
 +    @"    }\n"
-+    @"    function markDirty(){ dirty = true; clearFormError(); }\n"
++    @"    function markDirty(){ dirty = true; clearFormError(); updateReadinessUI(); }\n"
 +    @"    function initDirtyTracking(){\n"
 +    @"      const ids = ['base_url','model','api_mode','api_key','task','max_steps','max_completion_tokens','reasoning_effort','timeout_seconds','step_delay_seconds','system_prompt'];\n"
 +    @"      for (const id of ids){\n"
@@ -5291,7 +5935,7 @@ index ad2ff455..7e078ac0 100644
 +    @"        el.addEventListener('compositionstart', () => { composing = true; });\n"
 +    @"        el.addEventListener('compositionend', () => { composing = false; markDirty(); });\n"
 +    @"      }\n"
-+    @"      const cbs = ['remember_api_key','insecure_skip_tls_verify','half_res_screenshot','use_w3c_actions_for_swipe','debug_log_raw_assistant','use_custom_system_prompt','doubao_seed_enable_session_cache'];\n"
++    @"      const cbs = ['remember_api_key','insecure_skip_tls_verify','half_res_screenshot','use_w3c_actions_for_swipe','restart_responses_by_plan','debug_log_raw_assistant','use_custom_system_prompt','doubao_seed_enable_session_cache'];\n"
 +    @"      for (const id of cbs){\n"
 +    @"        const el = document.getElementById(id);\n"
 +    @"        if (!el) continue;\n"
@@ -5320,46 +5964,69 @@ index ad2ff455..7e078ac0 100644
 +    @"        await new Promise(r => setTimeout(r, 50));\n"
 +    @"      }\n"
 +    @"    }\n"
-+    @"    function persistAgentToken(token){\n"
-+    @"      const tkn = (token || '').trim();\n"
-+    @"      if (!tkn.length) return '';\n"
-+    @"      try { localStorage.setItem('ondevice_agent_token', tkn); } catch (e) {}\n"
-+    @"      try { document.cookie = `ondevice_agent_token=${encodeURIComponent(tkn)}; path=/agent; samesite=lax`; } catch (e) {}\n"
-+    @"      return tkn;\n"
-+    @"    }\n"
-+    @"    function currentAgentToken(){\n"
++    @"    function stripTokenFromURL(){\n"
++    @"      // Agent Token should never live in the URL longer than the initial page load.\n"
 +    @"      try {\n"
 +    @"        const qs = new URLSearchParams(window.location.search || '');\n"
-+    @"        const fromQuery = (qs.get('token') || '').trim();\n"
-+    @"        if (fromQuery.length > 0) {\n"
-+    @"          const persisted = persistAgentToken(fromQuery);\n"
-+    @"          try {\n"
-+    @"            qs.delete('token');\n"
-+    @"            const next = window.location.pathname + (qs.toString() ? ('?' + qs.toString()) : '') + (window.location.hash || '');\n"
-+    @"            window.history.replaceState({}, '', next);\n"
-+    @"          } catch (e) {}\n"
-+    @"          return persisted;\n"
-+    @"        }\n"
-+    @"        const fromStorage = (localStorage.getItem('ondevice_agent_token') || '').trim();\n"
-+    @"        return persistAgentToken(fromStorage);\n"
-+    @"      } catch (e) {\n"
-+    @"        return '';\n"
-+    @"      }\n"
++    @"        if (!qs.has('token')) return;\n"
++    @"        qs.delete('token');\n"
++    @"        const next = window.location.pathname + (qs.toString() ? ('?' + qs.toString()) : '') + (window.location.hash || '');\n"
++    @"        window.history.replaceState({}, '', next);\n"
++    @"      } catch (e) {}\n"
 +    @"    }\n"
 +    @"    async function api(path, method, body){\n"
-+    @"      const opts = {method: method || 'GET'};\n"
-+    @"      const token = currentAgentToken();\n"
++    @"      const opts = {method: method || 'GET', credentials: 'same-origin'};\n"
 +    @"      const headers = {};\n"
 +    @"      if (body) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }\n"
-+    @"      if (token.length > 0) { headers['X-OnDevice-Agent-Token'] = token; }\n"
 +    @"      if (Object.keys(headers).length > 0) { opts.headers = headers; }\n"
-+    @"      const r = await fetch(path, opts);\n"
++    @"      let r;\n"
++    @"      try {\n"
++    @"        r = await fetch(path, opts);\n"
++    @"      } catch (e) {\n"
++    @"        const msg = `${t('err_network')}: ${(e && e.message) ? e.message : String(e)}`;\n"
++    @"        const err = new Error(msg);\n"
++    @"        err.status = 0;\n"
++    @"        throw err;\n"
++    @"      }\n"
 +    @"      const j = await r.json().catch(() => ({}));\n"
 +    @"      if (!r.ok) {\n"
 +    @"        const msg = ((j.value && j.value.error) || j.error || `HTTP ${r.status}`);\n"
-+    @"        throw new Error(msg);\n"
++    @"        const err = new Error(msg);\n"
++    @"        err.status = r.status;\n"
++    @"        err.body = j;\n"
++    @"        throw err;\n"
 +    @"      }\n"
 +    @"      return j.value || {};\n"
++    @"    }\n"
++    @"    async function rotateToken(){\n"
++    @"      await commitIME();\n"
++    @"      clearFormError();\n"
++    @"      try {\n"
++    @"        const r = await api('/agent/rotate_token','POST');\n"
++    @"        const tok = (r.agent_token || '').toString();\n"
++    @"        const row = document.getElementById('rotate_token_row');\n"
++    @"        const val = document.getElementById('rotate_token_value');\n"
++    @"        if (val) { val.value = tok; }\n"
++    @"        if (row) { row.style.display = tok.length ? '' : 'none'; }\n"
++    @"        await refresh();\n"
++    @"      } catch (e) {\n"
++    @"        setFormError([e && e.message ? e.message : String(e)]);\n"
++    @"      }\n"
++    @"    }\n"
++    @"    async function copyRotatedToken(){\n"
++    @"      const val = document.getElementById('rotate_token_value');\n"
++    @"      const tok = val ? (val.value || '').toString() : '';\n"
++    @"      if (!tok) return;\n"
++    @"      try {\n"
++    @"        if (navigator.clipboard && navigator.clipboard.writeText) {\n"
++    @"          await navigator.clipboard.writeText(tok);\n"
++    @"          return;\n"
++    @"        }\n"
++    @"      } catch (e) {}\n"
++    @"      try {\n"
++    @"        if (val) { val.focus(); val.select(); }\n"
++    @"        document.execCommand('copy');\n"
++    @"      } catch (e) {}\n"
 +    @"    }\n"
 +	    @"    function restoreSystemPromptDefault(){\n"
 +	    @"      const el = document.getElementById('system_prompt');\n"
@@ -5383,6 +6050,7 @@ index ad2ff455..7e078ac0 100644
 +    @"        doubao_seed_enable_session_cache: document.getElementById('doubao_seed_enable_session_cache').checked,\n"
 +    @"        half_res_screenshot: document.getElementById('half_res_screenshot').checked,\n"
 +    @"        use_w3c_actions_for_swipe: document.getElementById('use_w3c_actions_for_swipe').checked,\n"
++    @"        restart_responses_by_plan: document.getElementById('restart_responses_by_plan').checked,\n"
 +    @"        task: document.getElementById('task').value,\n"
 +    @"        max_steps: document.getElementById('max_steps').value,\n"
 +    @"        max_completion_tokens: document.getElementById('max_completion_tokens').value,\n"
@@ -5401,8 +6069,18 @@ index ad2ff455..7e078ac0 100644
 +    @"    function isStrictNumberString(raw){\n"
 +    @"      return /^[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?$/.test(raw);\n"
 +    @"    }\n"
-+    @"    function validateBeforeStart(){\n"
++    @"    function isLoopbackHost(){\n"
++    @"      const h = ((window.location && window.location.hostname) ? window.location.hostname : '').toString().toLowerCase();\n"
++    @"      return h === '127.0.0.1' || h === 'localhost' || h === '::1';\n"
++    @"    }\n"
++    @"    function computeStartValidation(){\n"
 +    @"      const errors = [];\n"
++    @"      const invalid = {};\n"
++    @"\n"
++    @"      const baseUrlEl = document.getElementById('base_url');\n"
++    @"      const modelEl = document.getElementById('model');\n"
++    @"      const taskEl = document.getElementById('task');\n"
++    @"      const apiKeyEl = document.getElementById('api_key');\n"
 +    @"      const maxStepsEl = document.getElementById('max_steps');\n"
 +    @"      const timeoutEl = document.getElementById('timeout_seconds');\n"
 +    @"      const delayEl = document.getElementById('step_delay_seconds');\n"
@@ -5411,13 +6089,47 @@ index ad2ff455..7e078ac0 100644
 +    @"      const mode = modeEl ? (modeEl.value || 'responses') : 'responses';\n"
 +    @"      const tokenLabel = (mode === 'responses') ? t('label_max_output_tokens') : t('label_max_completion_tokens');\n"
 +    @"\n"
++    @"      const baseUrl = ((baseUrlEl && baseUrlEl.value) || '').trim();\n"
++    @"      if (!baseUrl.length) {\n"
++    @"        invalid.base_url = true;\n"
++    @"        errors.push(t('err_base_url_required'));\n"
++    @"      }\n"
++    @"      const model = ((modelEl && modelEl.value) || '').trim();\n"
++    @"      if (!model.length) {\n"
++    @"        invalid.model = true;\n"
++    @"        errors.push(t('err_model_required'));\n"
++    @"      }\n"
++    @"      const task = ((taskEl && taskEl.value) || '').trim();\n"
++    @"      if (!task.length) {\n"
++    @"        invalid.task = true;\n"
++    @"        errors.push(t('err_task_required'));\n"
++    @"      }\n"
++    @"\n"
++    @"      const apiKey = ((apiKeyEl && apiKeyEl.value) || '').trim();\n"
++    @"      const apiKeySet = !!(lastStatus && lastStatus.config && lastStatus.config.api_key_set);\n"
++    @"      if (!apiKey.length && !apiKeySet) {\n"
++    @"        invalid.api_key = true;\n"
++    @"        errors.push(t('err_api_key_required'));\n"
++    @"      }\n"
++    @"\n"
++    @"      if (!lastRunnerOk && lastRunnerError) {\n"
++    @"        errors.push(`${t('chip_runner_bad')}: ${lastRunnerError}`);\n"
++    @"      }\n"
++    @"\n"
++    @"      if (!isLoopbackHost() && lastStatusCode === 401) {\n"
++    @"        errors.push(`${t('err_agent_token_required')}\\n${t('err_unauthorized')}`);\n"
++    @"      } else if (!lastStatus && lastStatusError && lastStatusCode !== 0) {\n"
++    @"        // When the Runner is alive but /agent/* is blocked, surface the reason.\n"
++    @"        errors.push(lastStatusError);\n"
++    @"      }\n"
++    @"\n"
 +    @"      const maxStepsRaw = ((maxStepsEl && maxStepsEl.value) || '').trim();\n"
 +    @"      let maxStepsBad = false;\n"
 +    @"      if (maxStepsRaw.length) {\n"
 +    @"        const maxSteps = Number(maxStepsRaw);\n"
 +    @"        maxStepsBad = !(isStrictIntegerString(maxStepsRaw) && Number.isFinite(maxSteps) && maxSteps > 0);\n"
 +    @"      }\n"
-+    @"      setInvalid(maxStepsEl, maxStepsBad);\n"
++    @"      invalid.max_steps = maxStepsBad;\n"
 +    @"      if (maxStepsBad) errors.push(t('err_max_steps_gt0'));\n"
 +    @"\n"
 +    @"      const timeoutRaw = ((timeoutEl && timeoutEl.value) || '').trim();\n"
@@ -5426,7 +6138,7 @@ index ad2ff455..7e078ac0 100644
 +    @"        const timeout = Number(timeoutRaw);\n"
 +    @"        timeoutBad = !(isStrictNumberString(timeoutRaw) && Number.isFinite(timeout) && timeout > 0);\n"
 +    @"      }\n"
-+    @"      setInvalid(timeoutEl, timeoutBad);\n"
++    @"      invalid.timeout_seconds = timeoutBad;\n"
 +    @"      if (timeoutBad) errors.push(t('err_timeout_gt0'));\n"
 +    @"\n"
 +    @"      const delayRaw = ((delayEl && delayEl.value) || '').trim();\n"
@@ -5435,7 +6147,7 @@ index ad2ff455..7e078ac0 100644
 +    @"        const delay = Number(delayRaw);\n"
 +    @"        delayBad = !(isStrictNumberString(delayRaw) && Number.isFinite(delay) && delay > 0);\n"
 +    @"      }\n"
-+    @"      setInvalid(delayEl, delayBad);\n"
++    @"      invalid.step_delay_seconds = delayBad;\n"
 +    @"      if (delayBad) errors.push(t('err_step_delay_gt0'));\n"
 +    @"\n"
 +    @"      const tokensRaw = ((tokensEl && tokensEl.value) || '').trim();\n"
@@ -5444,11 +6156,123 @@ index ad2ff455..7e078ac0 100644
 +    @"        const tokens = Number(tokensRaw);\n"
 +    @"        tokensBad = !(isStrictIntegerString(tokensRaw) && Number.isFinite(tokens) && tokens > 0);\n"
 +    @"      }\n"
-+    @"      setInvalid(tokensEl, tokensBad);\n"
++    @"      invalid.max_completion_tokens = tokensBad;\n"
 +    @"      if (tokensBad) errors.push(`${tokenLabel} ${t('err_must_be_gt0')}`);\n"
 +    @"\n"
-+    @"      setFormError(errors);\n"
-+    @"      return errors.length === 0;\n"
++    @"      return {errors, invalid};\n"
++    @"    }\n"
++    @"    function applyStartValidationInvalid(invalid){\n"
++    @"      const ids = ['base_url','model','task','api_key','max_steps','timeout_seconds','step_delay_seconds','max_completion_tokens'];\n"
++    @"      for (const id of ids) {\n"
++    @"        const el = document.getElementById(id);\n"
++    @"        setInvalid(el, !!(invalid && invalid[id]));\n"
++    @"      }\n"
++    @"    }\n"
++    @"    function tokenUsageFromStatus(){\n"
++    @"      if (!lastStatus) return null;\n"
++    @"      const u = lastStatus.token_usage || lastStatus.tokenUsage || null;\n"
++    @"      if (!u) return null;\n"
++    @"      const req = Number(u.requests || u.req || 0);\n"
++    @"      const input = Number(u.input_tokens || u.inputTokens || 0);\n"
++    @"      const output = Number(u.output_tokens || u.outputTokens || 0);\n"
++    @"      const cached = Number(u.cached_tokens || u.cachedTokens || 0);\n"
++    @"      const total = Number(u.total_tokens || u.totalTokens || 0);\n"
++    @"      return {requests:req, input, output, cached, total};\n"
++    @"    }\n"
++    @"    function updateTokenSummary(){\n"
++    @"      const el = document.getElementById('token_summary');\n"
++    @"      if (!el) return;\n"
++    @"      const u = lastTokenUsage || tokenUsageFromStatus();\n"
++    @"      if (!u || (!u.requests && !u.total && !u.input && !u.output && !u.cached)) {\n"
++    @"        el.textContent = '';\n"
++    @"        el.style.display = 'none';\n"
++    @"        return;\n"
++    @"      }\n"
++    @"      const summary = (LANG === 'zh')\n"
++    @"        ? `Token：请求 ${u.requests} · 输入 ${u.input} · 输出 ${u.output} · 缓存 ${u.cached} · 总计 ${u.total}`\n"
++    @"        : `Tokens: req ${u.requests} · in ${u.input} · out ${u.output} · cached ${u.cached} · total ${u.total}`;\n"
++    @"      let cacheLine = '';\n"
++    @"      try {\n"
++    @"        const cfg = (lastStatus && lastStatus.config) ? lastStatus.config : {};\n"
++    @"        const enabled = !!(cfg && cfg.doubao_seed_enable_session_cache);\n"
++    @"        const apiMode = (cfg.api_mode || '').toString();\n"
++    @"        if (apiMode === 'responses') {\n"
++    @"          const hit = (u.cached || 0) > 0;\n"
++    @"          cacheLine = (LANG === 'zh')\n"
++    @"            ? `缓存：${enabled ? '已开启' : '未开启'}${hit ? '（已命中）' : ''}`\n"
++    @"            : `Cache: ${enabled ? 'enabled' : 'disabled'}${hit ? ' (hit)' : ''}`;\n"
++    @"        }\n"
++    @"      } catch (e) {}\n"
++    @"      el.textContent = cacheLine ? (summary + '\\n' + cacheLine) : summary;\n"
++    @"      el.style.display = '';\n"
++    @"    }\n"
++    @"    function updateReadinessUI(){\n"
++    @"      const chipsEl = document.getElementById('readiness');\n"
++    @"      const detailEl = document.getElementById('readiness_detail');\n"
++    @"      const tokenEl = document.getElementById('token_summary');\n"
++    @"      const startBtn = document.getElementById('btn_start');\n"
++    @"      const stopBtn = document.getElementById('btn_stop');\n"
++    @"      const saveBtn = document.getElementById('btn_save');\n"
++    @"      const running = !!(lastStatus && lastStatus.running);\n"
++    @"\n"
++    @"      if (stopBtn) stopBtn.disabled = !running;\n"
++    @"      if (saveBtn) saveBtn.disabled = running;\n"
++    @"\n"
++    @"      const v = computeStartValidation();\n"
++    @"      const canStart = !running && v.errors.length === 0;\n"
++    @"      if (startBtn) startBtn.disabled = !canStart;\n"
++    @"\n"
++    @"      if (chipsEl) {\n"
++    @"        const chips = [];\n"
++    @"        if (lastRunnerOk) {\n"
++    @"          chips.push({text: t('chip_runner_ok'), ok: true});\n"
++    @"        } else {\n"
++    @"          chips.push({text: t('chip_runner_bad'), ok: false});\n"
++    @"        }\n"
++    @"        if (!isLoopbackHost()) {\n"
++    @"          if (lastStatusCode === 401) chips.push({text: t('chip_auth_bad'), ok: false});\n"
++    @"          else if (lastStatus) chips.push({text: t('chip_auth_ok'), ok: true});\n"
++    @"        }\n"
++    @"        const configOk = !v.invalid.base_url && !v.invalid.model && !v.invalid.task && !v.invalid.max_steps && !v.invalid.timeout_seconds && !v.invalid.step_delay_seconds && !v.invalid.max_completion_tokens;\n"
++    @"        chips.push({text: configOk ? t('chip_config_ok') : t('chip_config_bad'), ok: configOk});\n"
++    @"        const keyOk = !v.invalid.api_key;\n"
++    @"        chips.push({text: keyOk ? t('chip_key_ok') : t('chip_key_bad'), ok: keyOk});\n"
++    @"        chips.push({text: running ? t('chip_running') : t('chip_stopped'), ok: running});\n"
++    @"\n"
++    @"        chipsEl.innerHTML = '';\n"
++    @"        for (const c of chips) {\n"
++    @"          const s = document.createElement('span');\n"
++    @"          s.className = 'chip ' + (c.ok ? 'ok' : 'bad');\n"
++    @"          s.textContent = c.text;\n"
++    @"          chipsEl.appendChild(s);\n"
++    @"        }\n"
++    @"        chipsEl.style.display = '';\n"
++    @"      }\n"
++    @"\n"
++    @"      if (detailEl) {\n"
++    @"        const lines = [];\n"
++    @"        if (running) {\n"
++    @"          lines.push((LANG === 'zh') ? '运行中：停止后可修改配置或重新开始。' : 'Running: stop to edit config or restart.');\n"
++    @"        }\n"
++    @"        if (!canStart && v.errors.length) {\n"
++    @"          for (const x of v.errors) lines.push(x);\n"
++    @"        }\n"
++    @"        if (lines.length) {\n"
++    @"          detailEl.textContent = lines.join('\\n');\n"
++    @"          detailEl.style.display = '';\n"
++    @"        } else {\n"
++    @"          detailEl.textContent = '';\n"
++    @"          detailEl.style.display = 'none';\n"
++    @"        }\n"
++    @"      }\n"
++    @"      if (tokenEl) updateTokenSummary();\n"
++    @"    }\n"
++    @"    function validateBeforeStart(){\n"
++    @"      const v = computeStartValidation();\n"
++    @"      applyStartValidationInvalid(v.invalid);\n"
++    @"      setFormError(v.errors);\n"
++    @"      updateReadinessUI();\n"
++    @"      return v.errors.length === 0;\n"
 +    @"    }\n"
 +    @"    function fillUI(cfg){\n"
 +    @"      document.getElementById('base_url').value = cfg.base_url || '';\n"
@@ -5468,6 +6292,7 @@ index ad2ff455..7e078ac0 100644
 +    @"      document.getElementById('insecure_skip_tls_verify').checked = !!cfg.insecure_skip_tls_verify;\n"
 +    @"      document.getElementById('half_res_screenshot').checked = !!cfg.half_res_screenshot;\n"
 +    @"      document.getElementById('use_w3c_actions_for_swipe').checked = (cfg.use_w3c_actions_for_swipe !== false);\n"
++    @"      document.getElementById('restart_responses_by_plan').checked = !!cfg.restart_responses_by_plan;\n"
 +    @"      document.getElementById('debug_log_raw_assistant').checked = !!cfg.debug_log_raw_assistant;\n"
 +    @"      if (cfg.api_key_set) {\n"
 +    @"        document.getElementById('api_key').placeholder = t('ph_api_key_set');\n"
@@ -5488,52 +6313,250 @@ index ad2ff455..7e078ac0 100644
 +    @"        cacheRow.style.display = show ? '' : 'none';\n"
 +    @"      }\n"
 +    @"    }\n"
++    @"    function clearNode(el){\n"
++    @"      if (!el) return;\n"
++    @"      while (el.firstChild) el.removeChild(el.firstChild);\n"
++    @"    }\n"
++    @"    function prettyRaw(raw){\n"
++    @"      const s = (raw || '').toString();\n"
++    @"      const t0 = s.trim();\n"
++    @"      if (!t0) return '';\n"
++    @"      if ((t0.startsWith('{') && t0.endsWith('}')) || (t0.startsWith('[') && t0.endsWith(']'))) {\n"
++    @"        try { return JSON.stringify(JSON.parse(t0), null, 2); } catch (e) {}\n"
++    @"      }\n"
++    @"      return s;\n"
++    @"    }\n"
++    @"    function screenshotPlaceholderText(){\n"
++    @"      return (LANG === 'zh') ? '正在加载截图…' : 'Loading screenshot…';\n"
++    @"    }\n"
++    @"    function screenshotNotFoundText(){\n"
++    @"      return (LANG === 'zh') ? '未找到截图' : 'Screenshot not found';\n"
++    @"    }\n"
++    @"    function rawJSONLabel(){\n"
++    @"      return (LANG === 'zh') ? '原始 JSON' : 'Raw JSON';\n"
++    @"    }\n"
++    @"    function otherLogsLabel(){\n"
++    @"      return (LANG === 'zh') ? '其它' : 'Other';\n"
++    @"    }\n"
++    @"    async function ensureStepScreenshot(step, imgEl, placeholderEl){\n"
++    @"      if (!imgEl) return;\n"
++    @"      const key = String(step);\n"
++    @"      if (shotCache[key]) {\n"
++    @"        imgEl.src = 'data:image/png;base64,' + shotCache[key];\n"
++    @"        imgEl.style.display = 'block';\n"
++    @"        if (placeholderEl) placeholderEl.style.display = 'none';\n"
++    @"        return;\n"
++    @"      }\n"
++    @"      if (shotLoading.has(key)) return;\n"
++    @"      shotLoading.add(key);\n"
++    @"      if (placeholderEl) {\n"
++    @"        placeholderEl.textContent = screenshotPlaceholderText();\n"
++    @"        placeholderEl.style.display = '';\n"
++    @"      }\n"
++    @"      try {\n"
++    @"        const r = await api('/agent/step_screenshot?step=' + encodeURIComponent(step));\n"
++    @"        const b64 = (r && r.png_base64) ? r.png_base64 : '';\n"
++    @"        if (r && r.ok && b64) {\n"
++    @"          shotCache[key] = b64;\n"
++    @"          imgEl.src = 'data:image/png;base64,' + b64;\n"
++    @"          imgEl.style.display = 'block';\n"
++    @"          if (placeholderEl) placeholderEl.style.display = 'none';\n"
++    @"        } else {\n"
++    @"          imgEl.style.display = 'none';\n"
++    @"          if (placeholderEl) placeholderEl.textContent = (r && r.error) ? String(r.error) : screenshotNotFoundText();\n"
++    @"        }\n"
++    @"      } catch (e) {\n"
++    @"        imgEl.style.display = 'none';\n"
++    @"        if (placeholderEl) placeholderEl.textContent = (e && e.message) ? e.message : String(e);\n"
++    @"      } finally {\n"
++    @"        shotLoading.delete(key);\n"
++    @"      }\n"
++    @"    }\n"
++    @"    function attemptCountLabel(n){\n"
++    @"      if (!(Number.isFinite(n) && n > 1)) return '';\n"
++    @"      return (LANG === 'zh') ? ` · ${n} 次尝试` : ` · ${n} attempts`;\n"
++    @"    }\n"
++    @"    function appendChatMsg(body, it, mode){\n"
++    @"      if (!body || !it) return;\n"
++    @"      const kind = (it.kind || '').toString();\n"
++    @"      const attempt = (it.attempt != null) ? Number(it.attempt) : 0;\n"
++    @"      const ts = (it.ts || '').toString();\n"
++    @"\n"
++    @"      const box = document.createElement('div');\n"
++    @"      box.className = 'msg';\n"
++    @"      const hdr = document.createElement('div');\n"
++    @"      hdr.className = 'msg-hdr';\n"
++    @"      const parts = [];\n"
++    @"      if (ts) parts.push(ts);\n"
++    @"      if (kind) parts.push(kind.toUpperCase());\n"
++    @"      if (attempt > 0) parts.push(`${t('word_attempt')} ${attempt}`);\n"
++    @"      hdr.textContent = parts.join(' · ');\n"
++    @"      box.appendChild(hdr);\n"
++    @"\n"
++    @"      if (mode !== 'raw') {\n"
++    @"        const pre = document.createElement('pre');\n"
++    @"        if (kind === 'request') {\n"
++    @"          pre.textContent = it.text || '';\n"
++    @"        } else {\n"
++    @"          let text = '';\n"
++    @"          if (it.reasoning) {\n"
++    @"            text += t('sep_reasoning') + '\\n' + it.reasoning + '\\n\\n';\n"
++    @"          }\n"
++    @"          text += t('sep_content') + '\\n' + (it.content || '');\n"
++    @"          pre.textContent = text;\n"
++    @"        }\n"
++    @"        box.appendChild(pre);\n"
++    @"      }\n"
++    @"\n"
++    @"      const rawDetails = document.createElement('details');\n"
++    @"      rawDetails.className = 'raw';\n"
++    @"      if (mode === 'raw') rawDetails.open = true;\n"
++    @"      const sum = document.createElement('summary');\n"
++    @"      sum.textContent = rawJSONLabel();\n"
++    @"      rawDetails.appendChild(sum);\n"
++    @"      const rawPre = document.createElement('pre');\n"
++    @"      rawPre.textContent = prettyRaw(it.raw || '') || t('raw_disabled');\n"
++    @"      rawDetails.appendChild(rawPre);\n"
++    @"      box.appendChild(rawDetails);\n"
++    @"\n"
++    @"      body.appendChild(box);\n"
++    @"    }\n"
++    @"    function parseLogLine(line){\n"
++    @"      const s = (line || '').toString().trim();\n"
++    @"      let d = null;\n"
++    @"      if (s.startsWith('{') && s.endsWith('}')) {\n"
++    @"        try { d = JSON.parse(s); } catch (e) { d = null; }\n"
++    @"      }\n"
++    @"      if (!d) return {step: -1, text: s};\n"
++    @"      const ts = (d.ts || '').toString();\n"
++    @"      const lvl = (d.lvl || 'INFO').toString().toUpperCase();\n"
++    @"      const tag = (d.tag || '').toString();\n"
++    @"      const ev = (d.event || '').toString();\n"
++    @"      const msg = (d.msg || '').toString();\n"
++    @"      let tail = '';\n"
++    @"      if (ev === 'step') {\n"
++    @"        tail = `step=${d.step} action=${d.action || ''}`.trim();\n"
++    @"      } else if (ev === 'token_usage') {\n"
++    @"        tail = `req=${d.req} +in=${d.d_in} +out=${d.d_out} +cached=${d.d_cached} +total=${d.d_total} cum(in=${d.c_in} out=${d.c_out} cached=${d.c_cached} total=${d.c_total})`;\n"
++    @"      } else if (d.error) {\n"
++    @"        tail = `error=${(d.error || '').toString()}`;\n"
++    @"      }\n"
++    @"      const hdr = `${ts} [${lvl}]${tag ? ` [${tag}]` : ''}${ev ? ` [${ev}]` : ''}`.trim();\n"
++    @"      const main = msg.length ? msg : ev;\n"
++    @"      const text = `${hdr} ${main}${tail ? ` ${tail}` : ''}`.trim();\n"
++    @"      const step = (d.step != null) ? Number(d.step) : -1;\n"
++    @"      return {step: Number.isFinite(step) ? step : -1, text};\n"
++    @"    }\n"
++    @"    function renderLogs(){\n"
++    @"      const el = document.getElementById('logs');\n"
++    @"      if (!el) return;\n"
++    @"      clearNode(el);\n"
++    @"      if (!lastLogLines || !lastLogLines.length) return;\n"
++    @"\n"
++    @"      const groupMap = new Map();\n"
++    @"      const groupOrder = [];\n"
++    @"      for (const line of lastLogLines) {\n"
++    @"        const parsed = parseLogLine(line);\n"
++    @"        const k = (parsed.step >= 0) ? String(parsed.step) : 'other';\n"
++    @"        if (!groupMap.has(k)) {\n"
++    @"          groupMap.set(k, {key: k, step: parsed.step, lines: []});\n"
++    @"          groupOrder.push(k);\n"
++    @"        }\n"
++    @"        groupMap.get(k).lines.push(parsed.text);\n"
++    @"      }\n"
++    @"\n"
++    @"      const lastKey = groupOrder.length ? groupOrder[groupOrder.length - 1] : '';\n"
++    @"      for (const k of groupOrder) {\n"
++    @"        const g = groupMap.get(k);\n"
++    @"        const card = document.createElement('details');\n"
++    @"        card.className = 'step-card';\n"
++    @"        if (k === lastKey) card.open = true;\n"
++    @"        const sum = document.createElement('summary');\n"
++    @"        if (g.step >= 0) sum.textContent = `${t('word_step')} ${g.step}`;\n"
++    @"        else sum.textContent = otherLogsLabel();\n"
++    @"        card.appendChild(sum);\n"
++    @"        const body = document.createElement('div');\n"
++    @"        body.className = 'step-body';\n"
++    @"        const box = document.createElement('div');\n"
++    @"        box.className = 'msg';\n"
++    @"        const pre = document.createElement('pre');\n"
++    @"        pre.textContent = (g.lines || []).join('\\n');\n"
++    @"        box.appendChild(pre);\n"
++    @"        body.appendChild(box);\n"
++    @"        card.appendChild(body);\n"
++    @"        el.appendChild(card);\n"
++    @"      }\n"
++    @"    }\n"
 +    @"    function renderChat(){\n"
 +    @"      const el = document.getElementById('chat');\n"
 +    @"      if (!el) return;\n"
 +    @"      const modeEl = document.getElementById('chat_mode');\n"
 +    @"      const mode = modeEl ? modeEl.value : 'structured';\n"
-+    @"      if (!lastChatItems || !lastChatItems.length) {\n"
-+    @"        el.textContent = '';\n"
-+    @"        return;\n"
-+    @"      }\n"
-+    @"      if (mode === 'raw') {\n"
-+    @"        const out = [];\n"
-+    @"        for (const it of lastChatItems) {\n"
-+    @"          const step = (it.step != null) ? it.step : '';\n"
-+    @"          const kind = (it.kind || '').toString();\n"
-+    @"          // include system prompt for debugging\n"
-+    @"          const attempt = (it.attempt != null) ? ((LANG === 'zh') ? `（${t('word_attempt')} ${it.attempt}）` : ` (${t('word_attempt')} ${it.attempt})`) : '';\n"
-+    @"          const ts = (it.ts || '').toString();\n"
-+    @"          const hdr = `${ts} ${t('word_step')} ${step} ${kind.toUpperCase()}${attempt}`.trim();\n"
-+    @"          out.push(hdr);\n"
-+    @"          out.push(it.raw || t('raw_disabled'));\n"
-+    @"          out.push('');\n"
-+    @"        }\n"
-+    @"        el.textContent = out.join('\\n');\n"
-+    @"        return;\n"
-+    @"      }\n"
-+    @"      // structured\n"
-+    @"      const out = [];\n"
++    @"      clearNode(el);\n"
++    @"      if (!lastChatItems || !lastChatItems.length) return;\n"
++    @"\n"
++    @"      const showShotsEl = document.getElementById('chat_show_screenshots');\n"
++    @"      const showShots = !!(showShotsEl && showShotsEl.checked);\n"
++    @"\n"
++    @"      const stepMap = new Map();\n"
++    @"      const stepOrder = [];\n"
 +    @"      for (const it of lastChatItems) {\n"
-+    @"        const step = (it.step != null) ? it.step : '';\n"
-+    @"        const kind = (it.kind || '').toString();\n"
-+    @"        const attempt = (it.attempt != null) ? ((LANG === 'zh') ? `（${t('word_attempt')} ${it.attempt}）` : ` (${t('word_attempt')} ${it.attempt})`) : '';\n"
-+    @"        const ts = (it.ts || '').toString();\n"
-+    @"        out.push(`${ts} ${t('word_step')} ${step} ${kind}${attempt}`.trim());\n"
-+	    @"        if (kind === 'request') {\n"
-+    @"          out.push(it.text || '');\n"
-+    @"        } else {\n"
-+    @"          if (it.reasoning) {\n"
-+    @"            out.push(t('sep_reasoning'));\n"
-+    @"            out.push(it.reasoning);\n"
-+    @"          }\n"
-+    @"          out.push(t('sep_content'));\n"
-+    @"          out.push(it.content || '');\n"
++    @"        const s = (it.step != null) ? Number(it.step) : NaN;\n"
++    @"        if (!Number.isFinite(s)) continue;\n"
++    @"        if (!stepMap.has(s)) {\n"
++    @"          stepMap.set(s, {step: s, attemptMap: new Map(), attemptOrder: []});\n"
++    @"          stepOrder.push(s);\n"
 +    @"        }\n"
-+    @"        out.push('');\n"
++    @"        const g = stepMap.get(s);\n"
++    @"        const a = (it.attempt != null) ? Number(it.attempt) : 0;\n"
++    @"        if (!g.attemptMap.has(a)) {\n"
++    @"          g.attemptMap.set(a, {attempt: a, request: null, response: null});\n"
++    @"          g.attemptOrder.push(a);\n"
++    @"        }\n"
++    @"        const ag = g.attemptMap.get(a);\n"
++    @"        const kind = (it.kind || '').toString();\n"
++    @"        if (kind === 'request') ag.request = it;\n"
++    @"        else if (kind === 'response') ag.response = it;\n"
 +    @"      }\n"
-+    @"      el.textContent = out.join('\\n');\n"
++    @"\n"
++    @"      const lastStep = stepOrder.length ? stepOrder[stepOrder.length - 1] : -1;\n"
++    @"      for (const step of stepOrder) {\n"
++    @"        const g = stepMap.get(step);\n"
++    @"        const card = document.createElement('details');\n"
++    @"        card.className = 'step-card';\n"
++    @"        if (step === lastStep) card.open = true;\n"
++    @"\n"
++    @"        const sum = document.createElement('summary');\n"
++    @"        sum.textContent = `${t('word_step')} ${step}` + attemptCountLabel(g.attemptOrder.length);\n"
++    @"        card.appendChild(sum);\n"
++    @"\n"
++    @"        const body = document.createElement('div');\n"
++    @"        body.className = 'step-body';\n"
++    @"\n"
++    @"        if (showShots) {\n"
++    @"          const ph = document.createElement('div');\n"
++    @"          ph.className = 'muted';\n"
++    @"          ph.textContent = screenshotPlaceholderText();\n"
++    @"          const img = document.createElement('img');\n"
++    @"          img.className = 'shot';\n"
++    @"          img.alt = `${t('word_step')} ${step}`;\n"
++    @"          img.style.display = 'none';\n"
++    @"          body.appendChild(ph);\n"
++    @"          body.appendChild(img);\n"
++    @"          const load = () => ensureStepScreenshot(step, img, ph);\n"
++    @"          card.addEventListener('toggle', () => { if (card.open) load(); });\n"
++    @"          if (card.open) load();\n"
++    @"        }\n"
++    @"\n"
++    @"        for (const a of g.attemptOrder) {\n"
++    @"          const ag = g.attemptMap.get(a);\n"
++    @"          appendChatMsg(body, ag.request, mode);\n"
++    @"          appendChatMsg(body, ag.response, mode);\n"
++    @"        }\n"
++    @"\n"
++    @"        card.appendChild(body);\n"
++    @"        el.appendChild(card);\n"
++    @"      }\n"
 +    @"    }\n"
 +    @"    async function resetAll(){\n"
 +    @"      await commitIME();\n"
@@ -5548,45 +6571,52 @@ index ad2ff455..7e078ac0 100644
 +    @"      if (isEditing() || composing) return;\n"
 +    @"      refreshInFlight = true;\n"
 +    @"      try {\n"
-+    @"      const st = await api('/agent/status');\n"
-+    @"      document.getElementById('status').textContent = JSON.stringify(st, null, 2);\n"
-+    @"      const notes = st.notes || '';\n"
-+    @"      document.getElementById('notes').textContent = notes;\n"
-+    @"      if (!dirty && !isEditing()) {\n"
-+    @"        fillUI((st.config)||{});\n"
++    @"        lastRunnerOk = false;\n"
++    @"        lastRunnerError = '';\n"
++    @"        try {\n"
++    @"          await api('/status');\n"
++    @"          lastRunnerOk = true;\n"
++    @"        } catch (e) {\n"
++    @"          lastRunnerOk = false;\n"
++    @"          lastRunnerError = (e && e.message) ? e.message : String(e);\n"
++    @"        }\n"
++    @"\n"
++    @"        lastStatus = null;\n"
++    @"        lastStatusError = '';\n"
++    @"        lastStatusCode = 0;\n"
++    @"\n"
++    @"        const st = await api('/agent/status');\n"
++    @"        lastStatus = st;\n"
++    @"        lastTokenUsage = tokenUsageFromStatus();\n"
++    @"        lastStatusCode = 200;\n"
++    @"        document.getElementById('status').textContent = JSON.stringify(st, null, 2);\n"
++    @"        const notes = st.notes || '';\n"
++    @"        document.getElementById('notes').textContent = notes;\n"
++    @"        if (!dirty && !isEditing()) {\n"
++    @"          fillUI((st.config)||{});\n"
++    @"        }\n"
++    @"        if (!eventsReady) {\n"
++    @"          const chat = await api('/agent/chat');\n"
++    @"          lastChatItems = (chat.items || []);\n"
++    @"          renderChat();\n"
++    @"          const logs = await api('/agent/logs');\n"
++    @"          lastLogLines = (logs.lines || []);\n"
++    @"          renderLogs();\n"
++    @"        }\n"
++    @"      } catch (e) {\n"
++    @"        lastStatus = null;\n"
++    @"        lastStatusCode = (e && typeof e.status === 'number') ? e.status : 0;\n"
++    @"        lastStatusError = (e && e.message) ? e.message : String(e);\n"
++    @"        document.getElementById('status').textContent = lastStatusError;\n"
++    @"        document.getElementById('notes').textContent = '';\n"
++    @"        lastLogLines = [];\n"
++    @"        renderLogs();\n"
++    @"        lastChatItems = [];\n"
++    @"        renderChat();\n"
 +    @"      }\n"
-+    @"      const chat = await api('/agent/chat');\n"
-+    @"      lastChatItems = (chat.items || []);\n"
-+	    @"      renderChat();\n"
-+	    @"      const logs = await api('/agent/logs');\n"
-+	    @"      const formatted = (logs.lines||[]).map((line) => {\n"
-+	    @"        const s = (line||'').toString().trim();\n"
-+	    @"        if (s.startsWith('{') && s.endsWith('}')) {\n"
-+	    @"          try {\n"
-+	    @"            const d = JSON.parse(s);\n"
-+	    @"            const ts = (d.ts||'').toString();\n"
-+	    @"            const lvl = (d.lvl||'INFO').toString().toUpperCase();\n"
-+	    @"            const tag = (d.tag||'').toString();\n"
-+	    @"            const ev = (d.event||'').toString();\n"
-+	    @"            const msg = (d.msg||'').toString();\n"
-+	    @"            let tail = '';\n"
-+	    @"            if (ev === 'step') {\n"
-+	    @"              tail = `step=${d.step} action=${d.action||''}`.trim();\n"
-+	    @"            } else if (ev === 'token_usage') {\n"
-+	    @"              tail = `req=${d.req} +in=${d.d_in} +out=${d.d_out} +cached=${d.d_cached} +total=${d.d_total} cum(in=${d.c_in} out=${d.c_out} cached=${d.c_cached} total=${d.c_total})`;\n"
-+	    @"            } else if (d.error) {\n"
-+	    @"              tail = `error=${(d.error||'').toString()}`;\n"
-+	    @"            }\n"
-+	    @"            const hdr = `${ts} [${lvl}]${tag ? ` [${tag}]` : ''}${ev ? ` [${ev}]` : ''}`.trim();\n"
-+	    @"            const main = msg.length ? msg : ev;\n"
-+	    @"            return `${hdr} ${main}${tail ? ` ${tail}` : ''}`.trim();\n"
-+	    @"          } catch (e) {}\n"
-+	    @"        }\n"
-+	    @"        return s;\n"
-+	    @"      });\n"
-+	    @"      document.getElementById('logs').textContent = formatted.join('\\n');\n"
 +	    @"      } finally {\n"
 +	    @"        refreshInFlight = false;\n"
++    @"        updateReadinessUI();\n"
 +	    @"      }\n"
 +	    @"    }\n"
 +    @"    async function saveCfg(){\n"
@@ -5610,9 +6640,182 @@ index ad2ff455..7e078ac0 100644
 +	    @"      await api('/agent/stop', 'POST');\n"
 +	    @"      await refresh();\n"
 +	    @"    }\n"
++    @"    function isPageVisible(){ return !document.hidden; }\n"
++    @"    function closeEvents(){\n"
++    @"      if (!events) return;\n"
++    @"      try { events.close(); } catch (e) {}\n"
++    @"      events = null;\n"
++    @"      eventsReady = false;\n"
++    @"    }\n"
++    @"    function stopPolling(){\n"
++    @"      if (!pollTimer) return;\n"
++    @"      try { clearInterval(pollTimer); } catch (e) {}\n"
++    @"      pollTimer = null;\n"
++    @"    }\n"
++    @"    function startPolling(){\n"
++    @"      if (pollTimer) return;\n"
++    @"      pollTimer = setInterval(() => {\n"
++    @"        if (!isPageVisible()) return;\n"
++    @"        if (events) return;\n"
++    @"        if (lastStatus && lastStatus.running) refresh();\n"
++    @"        else stopPolling();\n"
++    @"      }, __DEFAULT_REFRESH_INTERVAL_MS__);\n"
++    @"    }\n"
++    @"    function updateAutoUpdates(){\n"
++    @"      if (events) {\n"
++    @"        stopPolling();\n"
++    @"        return;\n"
++    @"      }\n"
++    @"      if (lastStatus && lastStatus.running) startPolling();\n"
++    @"      else stopPolling();\n"
++    @"    }\n"
++    @"    let renderTimer = null;\n"
++    @"    function scheduleRender(){\n"
++    @"      if (renderTimer) return;\n"
++    @"      renderTimer = setTimeout(() => {\n"
++    @"        renderTimer = null;\n"
++    @"        if (isEditing() || composing) {\n"
++    @"          pendingAutoRefresh = true;\n"
++    @"          return;\n"
++    @"        }\n"
++    @"        renderChat();\n"
++    @"        renderLogs();\n"
++    @"        updateReadinessUI();\n"
++    @"      }, 80);\n"
++    @"    }\n"
++    @"    function maybeApplyPendingAutoRefresh(){\n"
++    @"      if (!pendingAutoRefresh) return;\n"
++    @"      if (isEditing() || composing) return;\n"
++    @"      pendingAutoRefresh = false;\n"
++    @"      try {\n"
++    @"        renderChat();\n"
++    @"        renderLogs();\n"
++    @"        updateReadinessUI();\n"
++    @"      } catch (e) {}\n"
++    @"      refresh();\n"
++    @"    }\n"
++    @"    function applyStatusFromPush(st){\n"
++    @"      if (!st) return;\n"
++    @"      lastStatus = st;\n"
++    @"      lastTokenUsage = tokenUsageFromStatus();\n"
++    @"      lastStatusError = '';\n"
++    @"      lastStatusCode = 200;\n"
++    @"      if (isEditing() || composing) {\n"
++    @"        pendingAutoRefresh = true;\n"
++    @"        return;\n"
++    @"      }\n"
++    @"      document.getElementById('status').textContent = JSON.stringify(st, null, 2);\n"
++    @"      document.getElementById('notes').textContent = st.notes || '';\n"
++    @"      if (!dirty && !isEditing()) {\n"
++    @"        fillUI((st.config)||{});\n"
++    @"      }\n"
++    @"      updateReadinessUI();\n"
++    @"    }\n"
++    @"    function applySnapshotFromPush(snap){\n"
++    @"      if (!snap) return;\n"
++    @"      if (snap.status) {\n"
++    @"        lastRunnerOk = true;\n"
++    @"        lastRunnerError = '';\n"
++    @"        applyStatusFromPush(snap.status);\n"
++    @"      }\n"
++    @"      if (Array.isArray(snap.logs)) {\n"
++    @"        lastLogLines = snap.logs.slice();\n"
++    @"      } else if (snap.logs && Array.isArray(snap.logs.lines)) {\n"
++    @"        lastLogLines = snap.logs.lines.slice();\n"
++    @"      }\n"
++    @"      if (Array.isArray(snap.chat)) {\n"
++    @"        lastChatItems = snap.chat.slice();\n"
++    @"      } else if (snap.chat && Array.isArray(snap.chat.items)) {\n"
++    @"        lastChatItems = snap.chat.items.slice();\n"
++    @"      }\n"
++    @"      eventsReady = true;\n"
++    @"      scheduleRender();\n"
++    @"      updateAutoUpdates();\n"
++    @"    }\n"
++    @"    function appendLogLineFromPush(line){\n"
++    @"      const s = (line || '').toString();\n"
++    @"      if (!s.length) return;\n"
++    @"      lastLogLines.push(s);\n"
++    @"      while (lastLogLines.length > MAX_LOG_LINES) lastLogLines.shift();\n"
++    @"      try {\n"
++    @"        const d = JSON.parse(s);\n"
++    @"        if (d && d.event === 'token_usage') {\n"
++    @"          lastTokenUsage = {\n"
++    @"            requests: Number(d.req || 0),\n"
++    @"            input: Number(d.c_in || 0),\n"
++    @"            output: Number(d.c_out || 0),\n"
++    @"            cached: Number(d.c_cached || 0),\n"
++    @"            total: Number(d.c_total || 0),\n"
++    @"          };\n"
++    @"        }\n"
++    @"      } catch (e) {}\n"
++    @"      scheduleRender();\n"
++    @"    }\n"
++    @"    function chatHardLimit(){\n"
++    @"      try {\n"
++    @"        const ms = Number(((lastStatus && lastStatus.config) ? lastStatus.config.max_steps : 0) || 0);\n"
++    @"        const hard = Math.max(200, (Number.isFinite(ms) && ms > 0 ? ms : 60) * 8);\n"
++    @"        return hard;\n"
++    @"      } catch (e) { return 480; }\n"
++    @"    }\n"
++    @"    function appendChatItemFromPush(it){\n"
++    @"      if (!it) return;\n"
++    @"      lastChatItems.push(it);\n"
++    @"      const hard = chatHardLimit();\n"
++    @"      while (lastChatItems.length > hard) lastChatItems.shift();\n"
++    @"      scheduleRender();\n"
++    @"    }\n"
++    @"    function connectEvents(){\n"
++    @"      if (!window.EventSource) return false;\n"
++    @"      if (events) return true;\n"
++    @"      try {\n"
++    @"        const u = new URL('/agent/events', window.location.href);\n"
++    @"        u.searchParams.set('include_default_system_prompt','0');\n"
++    @"        events = new EventSource(u.toString());\n"
++    @"      } catch (e) {\n"
++    @"        events = null;\n"
++    @"        return false;\n"
++    @"      }\n"
++    @"      events.addEventListener('snapshot', (ev) => {\n"
++    @"        try { applySnapshotFromPush(JSON.parse((ev && ev.data) ? ev.data : '{}')); } catch (e) {}\n"
++    @"      });\n"
++    @"      events.addEventListener('status', (ev) => {\n"
++    @"        try { applyStatusFromPush(JSON.parse((ev && ev.data) ? ev.data : '{}')); } catch (e) {}\n"
++    @"      });\n"
++    @"      events.addEventListener('log', (ev) => {\n"
++    @"        appendLogLineFromPush((ev && ev.data) ? ev.data : '');\n"
++    @"      });\n"
++    @"      events.addEventListener('chat', (ev) => {\n"
++    @"        try { appendChatItemFromPush(JSON.parse((ev && ev.data) ? ev.data : '{}')); } catch (e) {}\n"
++    @"      });\n"
++    @"      events.addEventListener('ping', (_ev) => {});\n"
++    @"      events.onerror = (_ev) => {\n"
++    @"        closeEvents();\n"
++    @"        updateAutoUpdates();\n"
++    @"      };\n"
++    @"      return true;\n"
++    @"    }\n"
++    @"    async function startAutoUpdates(forceRefresh){\n"
++    @"      if (!isPageVisible()) return;\n"
++    @"      if (isEditing() || composing) { pendingAutoRefresh = true; return; }\n"
++    @"      const ok = connectEvents();\n"
++    @"      if (!ok || forceRefresh) {\n"
++    @"        await refresh();\n"
++    @"      }\n"
++    @"      updateAutoUpdates();\n"
++    @"    }\n"
++    @"    document.addEventListener('focusout', () => { setTimeout(maybeApplyPendingAutoRefresh, 0); });\n"
++    @"    document.addEventListener('visibilitychange', () => {\n"
++    @"      if (document.hidden) {\n"
++    @"        closeEvents();\n"
++    @"        stopPolling();\n"
++    @"      } else {\n"
++    @"        startAutoUpdates(true);\n"
++    @"      }\n"
++    @"    });\n"
 +    @"    applyI18n();\n"
 +    @"    initDirtyTracking();\n"
-+    @"    currentAgentToken();\n"
++    @"    stripTokenFromURL();\n"
 +    @"    {\n"
 +    @"      const modeEl = document.getElementById('chat_mode');\n"
 +    @"      if (modeEl) {\n"
@@ -5624,11 +6827,21 @@ index ad2ff455..7e078ac0 100644
 +    @"        });\n"
 +    @"      }\n"
 +    @"    }\n"
++    @"    {\n"
++    @"      const cb = document.getElementById('chat_show_screenshots');\n"
++    @"      if (cb) {\n"
++    @"        const saved = localStorage.getItem('ondevice_agent_chat_show_screenshots');\n"
++    @"        if (saved === '1') cb.checked = true;\n"
++    @"        cb.addEventListener('change', () => {\n"
++    @"          localStorage.setItem('ondevice_agent_chat_show_screenshots', cb.checked ? '1' : '');\n"
++    @"          renderChat();\n"
++    @"        });\n"
++    @"      }\n"
++    @"    }\n"
 +    @"    if (document.getElementById('system_prompt') && !document.getElementById('system_prompt').value) {\n"
 +    @"      document.getElementById('system_prompt').value = DEFAULT_SYSTEM_PROMPT;\n"
 +    @"    }\n"
-+    @"    refresh();\n"
-+    @"    setInterval(refresh, __DEFAULT_REFRESH_INTERVAL_MS__);\n"
++    @"    startAutoUpdates(true);\n"
 +    @"  </script>\n";
 +
 +  static NSString *const kOnDeviceAgentPageTail =
@@ -5764,38 +6977,20 @@ index ad2ff455..7e078ac0 100644
 +    @"        await new Promise(r => setTimeout(r, 50));\n"
 +    @"      }\n"
 +    @"    }\n"
-+    @"    function persistAgentToken(token){\n"
-+    @"      const tkn = (token || '').trim();\n"
-+    @"      if (!tkn.length) return '';\n"
-+    @"      try { localStorage.setItem('ondevice_agent_token', tkn); } catch (e) {}\n"
-+    @"      try { document.cookie = `ondevice_agent_token=${encodeURIComponent(tkn)}; path=/agent; samesite=lax`; } catch (e) {}\n"
-+    @"      return tkn;\n"
-+    @"    }\n"
-+    @"    function currentAgentToken(){\n"
++    @"    function stripTokenFromURL(){\n"
++    @"      // Agent Token should never live in the URL longer than the initial page load.\n"
 +    @"      try {\n"
 +    @"        const qs = new URLSearchParams(window.location.search || '');\n"
-+    @"        const fromQuery = (qs.get('token') || '').trim();\n"
-+    @"        if (fromQuery.length > 0) {\n"
-+    @"          const persisted = persistAgentToken(fromQuery);\n"
-+    @"          try {\n"
-+    @"            qs.delete('token');\n"
-+    @"            const next = window.location.pathname + (qs.toString() ? ('?' + qs.toString()) : '') + (window.location.hash || '');\n"
-+    @"            window.history.replaceState({}, '', next);\n"
-+    @"          } catch (e) {}\n"
-+    @"          return persisted;\n"
-+    @"        }\n"
-+    @"        const fromStorage = (localStorage.getItem('ondevice_agent_token') || '').trim();\n"
-+    @"        return persistAgentToken(fromStorage);\n"
-+    @"      } catch (e) {\n"
-+    @"        return '';\n"
-+    @"      }\n"
++    @"        if (!qs.has('token')) return;\n"
++    @"        qs.delete('token');\n"
++    @"        const next = window.location.pathname + (qs.toString() ? ('?' + qs.toString()) : '') + (window.location.hash || '');\n"
++    @"        window.history.replaceState({}, '', next);\n"
++    @"      } catch (e) {}\n"
 +    @"    }\n"
 +    @"    async function api(path, method, body){\n"
-+    @"      const opts = {method: method || 'GET'};\n"
-+    @"      const token = currentAgentToken();\n"
++    @"      const opts = {method: method || 'GET', credentials: 'same-origin'};\n"
 +    @"      const headers = {};\n"
 +    @"      if (body){ headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }\n"
-+    @"      if (token.length > 0) { headers['X-OnDevice-Agent-Token'] = token; }\n"
 +    @"      if (Object.keys(headers).length > 0) { opts.headers = headers; }\n"
 +    @"      const r = await fetch(path, opts);\n"
 +    @"      const j = await r.json().catch(() => ({}));\n"
@@ -5881,7 +7076,7 @@ index ad2ff455..7e078ac0 100644
 +    @"        window.visualViewport.addEventListener('scroll', updateViewport);\n"
 +    @"      } catch (e) {}\n"
 +    @"    }\n"
-+    @"    currentAgentToken();\n"
++    @"    stripTokenFromURL();\n"
 +    @"    load();\n"
 +    @"  </script>\n";
 +
@@ -5917,7 +7112,9 @@ index ad2ff455..7e078ac0 100644
 +    [[FBRoute GET:@"/agent/chat"].withoutSession respondWithTarget:self action:@selector(handleGetChat:)],
 +    [[FBRoute GET:@"/agent/events"].withoutSession respondWithTarget:self action:@selector(handleGetEvents:)],
 +    [[FBRoute GET:@"/agent/step_screenshot"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshot:)],
++    [[FBRoute GET:@"/agent/step_screenshots"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshots:)],
 +    [[FBRoute POST:@"/agent/config"].withoutSession respondWithTarget:self action:@selector(handlePostConfig:)],
++    [[FBRoute POST:@"/agent/rotate_token"].withoutSession respondWithTarget:self action:@selector(handlePostRotateToken:)],
 +    [[FBRoute POST:@"/agent/start"].withoutSession respondWithTarget:self action:@selector(handlePostStart:)],
 +    [[FBRoute POST:@"/agent/stop"].withoutSession respondWithTarget:self action:@selector(handlePostStop:)],
 +    [[FBRoute POST:@"/agent/reset"].withoutSession respondWithTarget:self action:@selector(handlePostReset:)],
@@ -5931,10 +7128,29 @@ index ad2ff455..7e078ac0 100644
 +  if (!OnDeviceAgentAuthorizeAgentPageRoute(request, &authError)) {
 +    return OnDeviceAgentUnauthorizedPayload(authError);
 +  }
-+  OnDeviceAgentTriggerWirelessDataPromptIfNeeded();
++
++  // If a valid token is supplied via query (?token=...), upgrade it into a session HttpOnly cookie
++  // so subsequent requests don't need a token in the URL.
++  NSDictionary<NSString *, NSString *> *headers = @{};
++  NSString *queryToken = OnDeviceAgentQueryValueCaseInsensitive(request.URL, kOnDeviceAgentAgentTokenQueryParam);
++  if (queryToken.length > 0) {
++    NSString *expected = [[OnDeviceAgentManager shared] agentToken];
++    if (expected.length > 0 && [queryToken isEqualToString:expected]) {
++      NSString *cookie = OnDeviceAgentAgentTokenCookieHeaderValue(queryToken);
++      if (cookie.length > 0) {
++        headers = @{@"Set-Cookie": cookie};
++      }
++    }
++  }
++
++  if (OnDeviceAgentIsLocalhostRequest(request)) {
++    OnDeviceAgentTriggerWirelessDataPromptIfNeeded();
++  }
++
 +  return [[OnDeviceAgentTextPayload alloc] initWithText:OnDeviceAgentPageHTML()
 +                                     contentType:@"text/html;charset=UTF-8"
-+                                      statusCode:kHTTPStatusCodeOK];
++                                      statusCode:kHTTPStatusCodeOK
++                                         headers:headers];
 +}
 +
 ++ (id<FBResponsePayload>)handleGetEditPage:(FBRouteRequest *)request
@@ -5943,9 +7159,23 @@ index ad2ff455..7e078ac0 100644
 +  if (!OnDeviceAgentAuthorizeAgentPageRoute(request, &authError)) {
 +    return OnDeviceAgentUnauthorizedPayload(authError);
 +  }
++
++  NSDictionary<NSString *, NSString *> *headers = @{};
++  NSString *queryToken = OnDeviceAgentQueryValueCaseInsensitive(request.URL, kOnDeviceAgentAgentTokenQueryParam);
++  if (queryToken.length > 0) {
++    NSString *expected = [[OnDeviceAgentManager shared] agentToken];
++    if (expected.length > 0 && [queryToken isEqualToString:expected]) {
++      NSString *cookie = OnDeviceAgentAgentTokenCookieHeaderValue(queryToken);
++      if (cookie.length > 0) {
++        headers = @{@"Set-Cookie": cookie};
++      }
++    }
++  }
++
 +  return [[OnDeviceAgentTextPayload alloc] initWithText:OnDeviceAgentEditPageHTML()
 +                                     contentType:@"text/html;charset=UTF-8"
-+                                      statusCode:kHTTPStatusCodeOK];
++                                      statusCode:kHTTPStatusCodeOK
++                                         headers:headers];
 +}
 +
 ++ (id<FBResponsePayload>)handleGetStatus:(FBRouteRequest *)request
@@ -6003,6 +7233,49 @@ index ad2ff455..7e078ac0 100644
 +  return FBResponseWithObject(@{@"ok": @YES, @"step": @(step), @"png_base64": b64});
 +}
 +
+++ (id<FBResponsePayload>)handleGetStepScreenshots:(FBRouteRequest *)request
++{
++  NSString *authError = nil;
++  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
++    return OnDeviceAgentUnauthorizedPayload(authError);
++  }
++
++  NSString *format = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"format"]));
++  NSString *stepsRaw = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"steps"]));
++  NSInteger limit = 60;
++  if ([request.parameters objectForKey:@"limit"] != nil) {
++    if (!OnDeviceAgentParseIntStrict(request.parameters[@"limit"], &limit) || limit <= 0) {
++      return OnDeviceAgentBadRequestPayload(@"Invalid query parameter: limit (must be integer > 0)");
++    }
++  }
++  double quality = 0.7;
++  if ([request.parameters objectForKey:@"quality"] != nil) {
++    if (!OnDeviceAgentParseDoubleStrict(request.parameters[@"quality"], &quality) || !isfinite(quality) || quality <= 0 || quality > 1) {
++      return OnDeviceAgentBadRequestPayload(@"Invalid query parameter: quality (must be number in (0,1])");
++    }
++  }
++
++  NSMutableOrderedSet<NSNumber *> *steps = [NSMutableOrderedSet orderedSet];
++  if (stepsRaw.length > 0) {
++    NSArray<NSString *> *parts = [stepsRaw componentsSeparatedByString:@","];
++    for (NSString *p in parts) {
++      NSString *t = OnDeviceAgentTrim(p ?: @"");
++      if (t.length == 0) {
++        continue;
++      }
++      NSInteger step = -1;
++      if (!OnDeviceAgentParseIntStrict(t, &step) || step < 0) {
++        return OnDeviceAgentBadRequestPayload(@"Invalid query parameter: steps (must be comma-separated integers >= 0)");
++      }
++      [steps addObject:@(step)];
++    }
++  }
++
++  NSArray<NSNumber *> *want = (steps.count > 0) ? steps.array : @[];
++  NSDictionary *obj = [[OnDeviceAgentManager shared] stepScreenshotsBase64WithSteps:want limit:limit format:format quality:quality] ?: @{};
++  return FBResponseWithObject(obj);
++}
++
 ++ (id<FBResponsePayload>)handlePostConfig:(FBRouteRequest *)request
 +{
 +  NSString *authError = nil;
@@ -6020,6 +7293,40 @@ index ad2ff455..7e078ac0 100644
 +  NSDictionary *st = [[OnDeviceAgentManager shared] status];
 +  [[OnDeviceAgentEventHub shared] broadcastJSONObject:st event:@"status"];
 +  return FBResponseWithObject(st);
++}
++
+++ (id<FBResponsePayload>)handlePostRotateToken:(FBRouteRequest *)request
++{
++  NSString *authError = nil;
++  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
++    return OnDeviceAgentUnauthorizedPayload(authError);
++  }
++
++  NSString *newToken = OnDeviceAgentGenerateAgentToken();
++  if (newToken.length == 0) {
++    return OnDeviceAgentBadRequestPayload(@"Failed to generate token");
++  }
++
++  __block BOOL ok = YES;
++  __block NSString *errMsg = nil;
++  dispatch_sync([OnDeviceAgentManager shared].stateQueue, ^{
++    ok = [[OnDeviceAgentManager shared] updateConfigWithArguments:@{@"agent_token": newToken} errorMessage:&errMsg];
++  });
++  if (!ok) {
++    return OnDeviceAgentBadRequestPayload(errMsg ?: @"rotate_token failed");
++  }
++
++  NSDictionary *st = [[OnDeviceAgentManager shared] status];
++  [[OnDeviceAgentEventHub shared] broadcastJSONObject:st event:@"status"];
++
++  NSString *cookie = OnDeviceAgentAgentTokenCookieHeaderValue(newToken);
++  NSDictionary *headers = (cookie.length > 0) ? @{@"Set-Cookie": cookie} : @{};
++  NSDictionary *obj = @{
++    @"ok": @YES,
++    @"agent_token": newToken,
++    @"status": st ?: @{},
++  };
++  return [[OnDeviceAgentJSONPayload alloc] initWithObject:obj statusCode:kHTTPStatusCodeOK headers:headers];
 +}
 +
 ++ (id<FBResponsePayload>)handlePostStart:(FBRouteRequest *)request
@@ -6070,7 +7377,7 @@ index ad2ff455..7e078ac0 100644
  @interface UITestingUITests : FBFailureProofTestCase <FBWebServerDelegate>
  @end
  
-@@ -35,6 +5949,8 @@ + (void)setUp
+@@ -35,6 +7256,8 @@ + (void)setUp
    } else {
      [FBConfiguration disableScreenshots];
    }

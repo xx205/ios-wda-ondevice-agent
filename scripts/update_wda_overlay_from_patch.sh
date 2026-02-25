@@ -40,13 +40,18 @@ fi
 patch_path="$repo_root/patches/webdriveragent_ondevice_agent_webui.patch"
 overlay_root="$repo_root/wda_overlay"
 
-files_to_copy=(
-  "WebDriverAgentRunner/UITestingUITests.m"
-  "WebDriverAgentLib/Routing/FBRouteRequest.h"
-  "WebDriverAgentLib/Routing/FBRouteRequest-Private.h"
-  "WebDriverAgentLib/Routing/FBRouteRequest.m"
-  "WebDriverAgentLib/Routing/FBWebServer.m"
-)
+patched_files_from_patch() {
+  local patch="$1"
+  # Use the destination path from each `diff --git a/... b/...` stanza.
+  # This works for modifications, additions, and renames (we want the post-patch path).
+  awk '
+    /^diff --git a\// {
+      p=$4;
+      sub(/^b\//, "", p);
+      print p;
+    }
+  ' "$patch" | sort -u
+}
 
 if [[ ! -f "$patch_path" ]]; then
   echo "Patch not found: $patch_path" >&2
@@ -72,12 +77,27 @@ trap cleanup EXIT
 git -C "$wda_dir" worktree add --detach "$tmp_worktree" HEAD >/dev/null
 git -C "$tmp_worktree" apply "$patch_path"
 
+files_to_copy=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && files_to_copy+=("$line")
+done < <(patched_files_from_patch "$patch_path")
+if [[ "${#files_to_copy[@]}" -eq 0 ]]; then
+  echo "No files found in patch: $patch_path" >&2
+  exit 2
+fi
+
 for rel in "${files_to_copy[@]}"; do
   src="$tmp_worktree/$rel"
   dst="$overlay_root/$rel"
   if [[ ! -f "$src" ]]; then
-    echo "Patched file not found: $src" >&2
-    exit 2
+    # The patch may delete files; in that case ensure overlay does not keep a stale copy.
+    if [[ -f "$dst" ]]; then
+      rm -f "$dst"
+      echo "Removed overlay (file deleted by patch): $dst"
+    else
+      echo "Skip (not present after patch): $rel"
+    fi
+    continue
   fi
   mkdir -p "$(dirname "$dst")"
   cp -f "$src" "$dst"

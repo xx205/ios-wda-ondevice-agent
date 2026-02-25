@@ -56,6 +56,7 @@ xcrun devicectl device process launch --device <UDID> --no-activate com.xxx.wda.
 - 你已经至少成功用 Xcode 跑通一次 WDA（确保签名/信任流程 OK）。
 - 手机上能看到 `WebDriverAgentRunner-Runner` 已安装（bundle id 类似 `com.xxx.wda.xctrunner`）。
 - 你知道设备 UDID（Xcode 或 `xcrun devicectl list devices`）。
+- 本机具备 `python3`（脚本解析 devicectl JSON 输出）与 `curl`（检查 WDA `/status`）。
 
 #### 可选：安装/更新一次 Runner（更可控）
 

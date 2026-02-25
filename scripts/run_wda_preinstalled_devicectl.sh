@@ -74,6 +74,16 @@ if ! command -v xcrun >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 not found. Install Python 3 (required for parsing devicectl JSON output)." >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl not found. Install curl (required for checking WDA /status)." >&2
+  exit 1
+fi
+
 lock_state_snapshot() {
   local device_arg="$1"
   local tmp="/tmp/devicectl_lock_state_$$.json"

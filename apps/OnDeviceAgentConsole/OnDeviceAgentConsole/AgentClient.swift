@@ -10,7 +10,7 @@ enum AgentClientError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .invalidWdaURL(let raw):
-      return "Invalid WDA URL: \(raw)"
+      return String(format: NSLocalizedString("Invalid Runner URL: %@", comment: ""), raw)
     case .httpStatus(let code, let body):
       if body.isEmpty {
         return "HTTP \(code)"
@@ -18,13 +18,16 @@ enum AgentClientError: LocalizedError {
       return "HTTP \(code): \(body)"
     case .decodingFailed(let body):
       if body.isEmpty {
-        return "Cannot decode JSON response"
+        return NSLocalizedString("Cannot decode JSON response", comment: "")
       }
-      return "Cannot decode JSON response: \(body)"
+      return String(format: NSLocalizedString("Cannot decode JSON response: %@", comment: ""), body)
     case .badResponse:
-      return "Bad response"
+      return NSLocalizedString("Bad response", comment: "")
     case .server(let message):
-      return message.isEmpty ? "Server error" : message
+      if message.isEmpty {
+        return NSLocalizedString("Server error", comment: "")
+      }
+      return message
     }
   }
 }
@@ -103,6 +106,14 @@ final class AgentClient {
   }
 
   private func decodeEnvelope<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    try Self.decodeWDAEnvelopeOrDirect(type, from: data, decoder: decoder)
+  }
+
+  static func decodeWDAEnvelopeOrDirect<T: Decodable>(
+    _ type: T.Type,
+    from data: Data,
+    decoder: JSONDecoder = JSONDecoder()
+  ) throws -> T {
     do {
       return try decoder.decode(WDAEnvelope<T>.self, from: data).value
     } catch {
@@ -161,6 +172,38 @@ final class AgentClient {
       throw AgentClientError.server("Invalid screenshot payload")
     }
     return data
+  }
+
+  func getStepScreenshotsBase64(
+    steps: [Int],
+    limit: Int? = nil,
+    format: String? = nil,
+    quality: Double? = nil
+  ) async throws -> AgentStepScreenshotsPayload {
+    var comps = URLComponents(url: endpoint("/agent/step_screenshots"), resolvingAgainstBaseURL: false)!
+    var items: [URLQueryItem] = []
+    if !steps.isEmpty {
+      items.append(URLQueryItem(name: "steps", value: steps.map(String.init).joined(separator: ",")))
+    }
+    if let limit {
+      items.append(URLQueryItem(name: "limit", value: String(limit)))
+    }
+    if let format, !format.isEmpty {
+      items.append(URLQueryItem(name: "format", value: format))
+    }
+    if let quality {
+      items.append(URLQueryItem(name: "quality", value: String(quality)))
+    }
+    if !items.isEmpty {
+      comps.queryItems = items
+    }
+
+    var req = URLRequest(url: comps.url!)
+    req.httpMethod = "GET"
+    if !agentToken.isEmpty {
+      req.setValue(agentToken, forHTTPHeaderField: "X-OnDevice-Agent-Token")
+    }
+    return try await fetch(req, as: AgentStepScreenshotsPayload.self)
   }
 
   func postConfig(_ cfg: AgentConfigRequest) async throws -> AgentStatus {
