@@ -6,6 +6,28 @@
 
 ---
 
+## 0.1 实施状态（截至 2026-02-26）
+
+本路线图的“最小可行拆分”已落地到代码中，当前结构如下：
+
+- Runner（WDA overlay）
+  - `wda_overlay/WebDriverAgentRunner/UITestingUITests.m`：保留 glue + runtime（step loop）、Manager、入口 test case 等
+  - 已拆分模块（均通过 `#import "*.m"` 注入同一编译单元，避免改 Xcode project）：
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentPrompts.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentMemory.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentRedaction.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentSecurity.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentModelClient.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentActions.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentExports.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentWebUI.m`
+    - `wda_overlay/WebDriverAgentRunner/OnDeviceAgentRoutes.m`
+  - patch/overlay 同步校验：`bash scripts/check_wda_patch_sync.sh`
+
+- Console（SwiftUI）
+  - `apps/OnDeviceAgentConsole/OnDeviceAgentConsole/ContentView.swift` 已收敛为 Tab/导航与少量 glue。
+  - 分页视图落在 `apps/OnDeviceAgentConsole/OnDeviceAgentConsole/Views/*.swift`，状态与网络集中在 `ConsoleStore.swift` / `AgentClient.swift`。
+
 ## 0. 当前状态（重构动机）
 
 当前代码复杂度高度集中在两个“巨型文件”：
@@ -229,4 +251,3 @@
 - 引入更复杂的 UI tree / element selector 能力（属于范式升级）
 - 大规模功能扩展（Apple Watch、更多设备）
 - 彻底替换 Web UI（目前先以稳定/可维护为主）
-

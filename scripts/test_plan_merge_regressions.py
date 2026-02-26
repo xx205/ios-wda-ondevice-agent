@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WDA_FILE = REPO_ROOT / "wda_overlay" / "WebDriverAgentRunner" / "UITestingUITests.m"
+WDA_RUNNER_DIR = REPO_ROOT / "wda_overlay" / "WebDriverAgentRunner"
 
 
 def normalize_key(text: str) -> str:
@@ -136,14 +136,17 @@ def test_ids_are_non_empty() -> None:
 
 
 def test_code_contains_expected_helpers() -> None:
-    src = WDA_FILE.read_text(encoding="utf-8", errors="replace")
+    parts: list[str] = []
+    for p in sorted(WDA_RUNNER_DIR.glob("*.m")):
+        parts.append(p.read_text(encoding="utf-8", errors="replace"))
+    src = "\n".join(parts)
     assert_true("OnDeviceAgentNormalizePlanItemTextKey" in src, "runner code must include plan text normalization helper")
     assert_true("[id:" in src, "runner prompt should expose plan item ids to encourage stable echo")
 
 
 def main() -> int:
-    if not WDA_FILE.exists():
-        print(f"Missing runner file: {WDA_FILE}", file=sys.stderr)
+    if not WDA_RUNNER_DIR.exists():
+        print(f"Missing runner directory: {WDA_RUNNER_DIR}", file=sys.stderr)
         return 2
 
     tests = [
