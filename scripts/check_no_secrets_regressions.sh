@@ -36,27 +36,27 @@ must_not_have() {
   fi
 }
 
-wda_file="$repo_root/wda_overlay/WebDriverAgentRunner/UITestingUITests.m"
+wda_runner_dir="$repo_root/wda_overlay/WebDriverAgentRunner"
 console_redaction="$repo_root/apps/OnDeviceAgentConsole/OnDeviceAgentConsole/Utilities/ConsoleRedaction.swift"
 
-[[ -f "$wda_file" ]] || fail "missing $wda_file"
+[[ -d "$wda_runner_dir" ]] || fail "missing $wda_runner_dir"
 [[ -f "$console_redaction" ]] || fail "missing $console_redaction"
 
 echo "== Runner web UI token storage =="
-must_have "stripTokenFromURL\\(" "$wda_file"
-must_not_have "localStorage\\.setItem\\('ondevice_agent_token'" "$wda_file"
-must_not_have "document\\.cookie" "$wda_file"
+must_have "stripTokenFromURL\\(" "$wda_runner_dir"
+must_not_have "localStorage\\.setItem\\('ondevice_agent_token'" "$wda_runner_dir"
+must_not_have "document\\.cookie" "$wda_runner_dir"
 
 echo "== Runner cookie attributes (session, Strict, HttpOnly) =="
-must_have "SameSite=Strict" "$wda_file"
-must_have "HttpOnly" "$wda_file"
+must_have "SameSite=Strict" "$wda_runner_dir"
+must_have "HttpOnly" "$wda_runner_dir"
 
 echo "== Raw redaction keys include agent token =="
-must_have "x-ondevice-agent-token" "$wda_file"
-must_have "agent_token" "$wda_file"
-must_have "ondevice_agent_token" "$wda_file"
-must_have "authorization" "$wda_file"
-must_have "api_key" "$wda_file"
+must_have "x-ondevice-agent-token" "$wda_runner_dir"
+must_have "agent_token" "$wda_runner_dir"
+must_have "ondevice_agent_token" "$wda_runner_dir"
+must_have "authorization" "$wda_runner_dir"
+must_have "api_key" "$wda_runner_dir"
 
 echo "== Server logs must not print full request headers =="
 route_req="$repo_root/wda_overlay/WebDriverAgentLib/Routing/FBRouteRequest.m"
