@@ -12,6 +12,15 @@
 	    A0B1C2D3E4F5060708090B02 /* ConsoleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */; };
 	    A0B1C2D3E4F5060708090B03 /* AgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A12 /* AgentClient.swift */; };
 	    A0B1C2D3E4F5060708090B04 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A13 /* Models.swift */; };
+	    A0B1C2D3E4F5060708090B0E /* Keyboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A24 /* Keyboard.swift */; };
+	    A0B1C2D3E4F5060708090B0F /* RunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A25 /* RunView.swift */; };
+	    A0B1C2D3E4F5060708090B10 /* LogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A26 /* LogsView.swift */; };
+	    A0B1C2D3E4F5060708090B11 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A27 /* ChatView.swift */; };
+	    A0B1C2D3E4F5060708090B12 /* NotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A28 /* NotesView.swift */; };
+	    A0B1C2D3E4F5060708090B13 /* Fields.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A29 /* Fields.swift */; };
+	    A0B1C2D3E4F5060708090B14 /* LiveProgressPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A2A /* LiveProgressPanel.swift */; };
+	    A0B1C2D3E4F5060708090B15 /* EditorSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A2B /* EditorSheets.swift */; };
+	    A0B1C2D3E4F5060708090B16 /* QRCodeSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A2C /* QRCodeSheets.swift */; };
 	    DDD875736225B31ABE994088 /* ConsoleParsersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 400CCBCA3204BCB67B894FF9 /* ConsoleParsersTests.swift */; };
 	    A0B1C2D3E4F5060708090B07 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A19 /* ActivityView.swift */; };
 	    A0B1C2D3E4F5060708090B08 /* QRCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5060708090A1A /* QRCode.swift */; };
@@ -30,6 +39,15 @@
 	    A0B1C2D3E4F5060708090A12 /* AgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentClient.swift; sourceTree = "<group>"; };
 	    A0B1C2D3E4F5060708090A13 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 	    A0B1C2D3E4F5060708090A14 /* ConsoleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleStore.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A24 /* Keyboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keyboard.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A25 /* RunView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunView.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A26 /* LogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogsView.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A27 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A28 /* NotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesView.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A29 /* Fields.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fields.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A2A /* LiveProgressPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveProgressPanel.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A2B /* EditorSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSheets.swift; sourceTree = "<group>"; };
+	    A0B1C2D3E4F5060708090A2C /* QRCodeSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeSheets.swift; sourceTree = "<group>"; };
 	    400CCBCA3204BCB67B894FF9 /* ConsoleParsersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleParsersTests.swift; sourceTree = "<group>"; };
 	    A0B1C2D3E4F5060708090A15 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 	    A0B1C2D3E4F5060708090A16 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -100,6 +118,7 @@
 	        A0B1C2D3E4F5060708090A12 /* AgentClient.swift */,
 	        A0B1C2D3E4F5060708090A13 /* Models.swift */,
 	        A0B1C2D3E4F5060708090A1C /* Utilities */,
+	        A0B1C2D3E4F5060708090A2D /* Views */,
 	        A0B1C2D3E4F5060708090A15 /* Info.plist */,
 	        A0B1C2D3E4F5060708090A1D /* Localizable.strings */,
 	        A0B1C2D3E4F5060708090A18 /* LaunchScreen.storyboard */,
@@ -123,10 +142,26 @@
         A0B1C2D3E4F5060708090A1E /* ActionOverlay.swift */,
         A0B1C2D3E4F5060708090A1F /* DisclosureHeader.swift */,
         A0B1C2D3E4F5060708090A23 /* ConsoleRedaction.swift */,
+        A0B1C2D3E4F5060708090A24 /* Keyboard.swift */,
         A0B1C2D3E4F5060708090A1A /* QRCode.swift */,
         A0B1C2D3E4F5060708090A1B /* TempFiles.swift */,
       );
       path = Utilities;
+      sourceTree = "<group>";
+    };
+    A0B1C2D3E4F5060708090A2D /* Views */ = {
+      isa = PBXGroup;
+      children = (
+        A0B1C2D3E4F5060708090A25 /* RunView.swift */,
+        A0B1C2D3E4F5060708090A26 /* LogsView.swift */,
+        A0B1C2D3E4F5060708090A27 /* ChatView.swift */,
+        A0B1C2D3E4F5060708090A28 /* NotesView.swift */,
+        A0B1C2D3E4F5060708090A29 /* Fields.swift */,
+        A0B1C2D3E4F5060708090A2A /* LiveProgressPanel.swift */,
+        A0B1C2D3E4F5060708090A2B /* EditorSheets.swift */,
+        A0B1C2D3E4F5060708090A2C /* QRCodeSheets.swift */,
+      );
+      path = Views;
       sourceTree = "<group>";
     };
 /* End PBXGroup section */
@@ -232,10 +267,19 @@
         A0B1C2D3E4F5060708090B02 /* ConsoleStore.swift in Sources */,
         A0B1C2D3E4F5060708090B03 /* AgentClient.swift in Sources */,
         A0B1C2D3E4F5060708090B04 /* Models.swift in Sources */,
+        A0B1C2D3E4F5060708090B0F /* RunView.swift in Sources */,
+        A0B1C2D3E4F5060708090B10 /* LogsView.swift in Sources */,
+        A0B1C2D3E4F5060708090B11 /* ChatView.swift in Sources */,
+        A0B1C2D3E4F5060708090B12 /* NotesView.swift in Sources */,
+        A0B1C2D3E4F5060708090B13 /* Fields.swift in Sources */,
+        A0B1C2D3E4F5060708090B14 /* LiveProgressPanel.swift in Sources */,
+        A0B1C2D3E4F5060708090B15 /* EditorSheets.swift in Sources */,
+        A0B1C2D3E4F5060708090B16 /* QRCodeSheets.swift in Sources */,
         A0B1C2D3E4F5060708090B07 /* ActivityView.swift in Sources */,
         A0B1C2D3E4F5060708090B0B /* ActionOverlay.swift in Sources */,
         A0B1C2D3E4F5060708090B0C /* DisclosureHeader.swift in Sources */,
         A0B1C2D3E4F5060708090B0D /* ConsoleRedaction.swift in Sources */,
+        A0B1C2D3E4F5060708090B0E /* Keyboard.swift in Sources */,
         A0B1C2D3E4F5060708090B08 /* QRCode.swift in Sources */,
         A0B1C2D3E4F5060708090B09 /* TempFiles.swift in Sources */,
       );
