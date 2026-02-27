@@ -107,14 +107,6 @@
 - (void)sendEvent:(NSString *)event data:(NSString *)data;
 @end
 
-@interface OnDeviceAgentEventHub : NSObject
-+ (instancetype)shared;
-- (void)addClient:(OnDeviceAgentEventStreamResponse *)client;
-- (void)removeClient:(OnDeviceAgentEventStreamResponse *)client;
-- (void)broadcastEvent:(NSString *)event data:(NSString *)data;
-- (void)broadcastJSONObject:(id)obj event:(NSString *)event;
-@end
-
 @implementation OnDeviceAgentEventStreamResponse {
   __weak HTTPConnection *_connection;
   dispatch_queue_t _queue;
@@ -660,4 +652,3 @@ static id<FBResponsePayload> OnDeviceAgentBadRequestPayload(NSString *message)
 }
 
 @end
-

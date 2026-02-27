@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 
-static long long OnDeviceAgentLL(id v)
+static long long OnDeviceAgentLL(id _Nullable v)
 {
   if ([v isKindOfClass:NSNumber.class]) {
     return [((NSNumber *)v) longLongValue];
@@ -14,6 +14,9 @@ static long long OnDeviceAgentLL(id v)
   }
   return 0;
 }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnullability-completeness"
 
 @interface OnDeviceAgent (ModelClient)
 - (NSDictionary *)tokenUsageSnapshot;
@@ -591,7 +594,9 @@ static long long OnDeviceAgentLL(id v)
 
 #pragma mark - NSURLSessionDelegate
 
-- (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler
+- (void)URLSession:(NSURLSession *)session
+didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+ completionHandler:(void (^ _Nonnull)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler
 {
   BOOL insecure = OnDeviceAgentParseBool(self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey], NO);
   if (!insecure) {
@@ -617,3 +622,5 @@ static long long OnDeviceAgentLL(id v)
 }
 
 @end
+
+#pragma clang diagnostic pop
