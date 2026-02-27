@@ -51,14 +51,16 @@ if [[ ! -f "$patch_path" ]]; then
   exit 2
 fi
 
-target_file="$wda_dir/WebDriverAgentRunner/UITestingUITests.m"
+target_dir="$wda_dir/WebDriverAgentRunner"
+target_file="$target_dir/UITestingUITests.m"
 if [[ ! -f "$target_file" ]]; then
   echo "Target file not found: $target_file" >&2
   exit 2
 fi
 
-if grep -q "FBOnDeviceAgentCommands" "$target_file" >/dev/null 2>&1; then
-  echo "Patch already applied (found FBOnDeviceAgentCommands)."
+marker_file="$target_dir/OnDeviceAgentRoutes.m"
+if [[ -f "$marker_file" ]] && grep -q "FBOnDeviceAgentCommands" "$marker_file" >/dev/null 2>&1; then
+  echo "Patch already applied (found FBOnDeviceAgentCommands in OnDeviceAgentRoutes.m)."
   exit 0
 fi
 

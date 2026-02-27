@@ -89,6 +89,20 @@ static NSUInteger const kOnDeviceAgentChatCompletionsMaxNonSystemMessages = 24; 
 - (NSArray<NSDictionary *> *)chat;
 @end
 
+// Forward declarations for symbols implemented in OnDeviceAgentExports.m / OnDeviceAgentRoutes.m
+@interface OnDeviceAgentManager (OnDeviceAgentExportsForward)
+- (void)storeStepScreenshotPNG:(NSData *)png step:(NSInteger)step token:(NSInteger)token;
+@end
+
+@class OnDeviceAgentEventStreamResponse;
+@interface OnDeviceAgentEventHub : NSObject
++ (instancetype)shared;
+- (void)addClient:(OnDeviceAgentEventStreamResponse *)client;
+- (void)removeClient:(OnDeviceAgentEventStreamResponse *)client;
+- (void)broadcastEvent:(NSString *)event data:(NSString *)data;
+- (void)broadcastJSONObject:(id)obj event:(NSString *)event;
+@end
+
 static UIWindow *gOnDeviceAgentConnectivityAlertWindow = nil;
 static NSObject<UNUserNotificationCenterDelegate> *gOnDeviceAgentNotificationDelegate = nil;
 
@@ -1429,6 +1443,8 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 @property (atomic, assign) long long usageOutputTokens;
 @property (atomic, assign) long long usageCachedTokens;
 @property (atomic, assign) long long usageTotalTokens;
+
+- (void)emit:(NSString *)line;
 @end
 
 #import "OnDeviceAgentMemory.m"
