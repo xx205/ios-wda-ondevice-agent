@@ -142,6 +142,12 @@ bash scripts/install_wda_prepared_runner.sh --device <UDID>
 
 说明见：`tools/README.md`
 
+### 9) 豆包（火山方舟）接入与缓存说明
+
+豆包模型（火山方舟 Ark）接入步骤、API Key 获取、Responses 缓存开通与配置已整理为独立文档：
+
+- `docs/recipes/volcengine_doubao_setup.md`
+
 ---
 
 ## Disclaimer / 免责声明
