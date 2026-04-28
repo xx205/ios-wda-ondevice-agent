@@ -88,7 +88,7 @@ index 0b82eaff..70bf31d7 100644
  #import "FBRuntimeUtils.h"
  #import "FBSession.h"
  #import "FBTCPSocket.h"
-@@ -201,7 +201,12 @@ - (void)registerRouteHandlers:(NSArray *)commandHandlerClasses
+@@ -201,7 +201,12 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
            routeRequestWithURL:request.url
            parameters:request.params
            arguments:arguments ?: @{}
@@ -115,7 +115,7 @@ diff --git a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m b/We
 index 3eee1926..cd23fc23 100644
 --- a/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m
 +++ b/WebDriverAgentLib/Vendor/RoutingHTTPServer/RoutingConnection.m
-@@ -139,4 +139,15 @@ - (BOOL)shouldDie {
+@@ -139,4 +139,15 @@
    return shouldDie;
  }
  
@@ -1068,13 +1068,13 @@ index 00000000..81224ab2
 +
 diff --git a/WebDriverAgentRunner/OnDeviceAgentModelClient.m b/WebDriverAgentRunner/OnDeviceAgentModelClient.m
 new file mode 100644
-index 00000000..878c3494
+index 00000000..df3ed8e8
 --- /dev/null
 +++ b/WebDriverAgentRunner/OnDeviceAgentModelClient.m
-@@ -0,0 +1,619 @@
+@@ -0,0 +1,626 @@
 +#import <Foundation/Foundation.h>
 +
-+static long long OnDeviceAgentLL(id v)
++static long long OnDeviceAgentLL(id _Nullable v)
 +{
 +  if ([v isKindOfClass:NSNumber.class]) {
 +    return [((NSNumber *)v) longLongValue];
@@ -1088,6 +1088,9 @@ index 00000000..878c3494
 +  }
 +  return 0;
 +}
++
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wnullability-completeness"
 +
 +@interface OnDeviceAgent (ModelClient)
 +- (NSDictionary *)tokenUsageSnapshot;
@@ -1665,7 +1668,9 @@ index 00000000..878c3494
 +
 +#pragma mark - NSURLSessionDelegate
 +
-+- (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler
++- (void)URLSession:(NSURLSession *)session
++didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
++ completionHandler:(void (^ _Nonnull)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler
 +{
 +  BOOL insecure = OnDeviceAgentParseBool(self.config[kOnDeviceAgentInsecureSkipTLSVerifyKey], NO);
 +  if (!insecure) {
@@ -1691,6 +1696,8 @@ index 00000000..878c3494
 +}
 +
 +@end
++
++#pragma clang diagnostic pop
 diff --git a/WebDriverAgentRunner/OnDeviceAgentPrompts.m b/WebDriverAgentRunner/OnDeviceAgentPrompts.m
 new file mode 100644
 index 00000000..ba40a233
@@ -2022,10 +2029,10 @@ index 00000000..f63f13d2
 +
 diff --git a/WebDriverAgentRunner/OnDeviceAgentRoutes.m b/WebDriverAgentRunner/OnDeviceAgentRoutes.m
 new file mode 100644
-index 00000000..c764342b
+index 00000000..a28f659a
 --- /dev/null
 +++ b/WebDriverAgentRunner/OnDeviceAgentRoutes.m
-@@ -0,0 +1,663 @@
+@@ -0,0 +1,715 @@
 +#import <Foundation/Foundation.h>
 +
 +@interface OnDeviceAgentTextPayload : NSObject <FBResponsePayload>
@@ -2133,14 +2140,6 @@ index 00000000..c764342b
 +@interface OnDeviceAgentEventStreamResponse : NSObject <HTTPResponse>
 +- (instancetype)initWithConnection:(HTTPConnection *)connection;
 +- (void)sendEvent:(NSString *)event data:(NSString *)data;
-+@end
-+
-+@interface OnDeviceAgentEventHub : NSObject
-++ (instancetype)shared;
-+- (void)addClient:(OnDeviceAgentEventStreamResponse *)client;
-+- (void)removeClient:(OnDeviceAgentEventStreamResponse *)client;
-+- (void)broadcastEvent:(NSString *)event data:(NSString *)data;
-+- (void)broadcastJSONObject:(id)obj event:(NSString *)event;
 +@end
 +
 +@implementation OnDeviceAgentEventStreamResponse {
@@ -2425,6 +2424,10 @@ index 00000000..c764342b
 +    [[FBRoute GET:@"/agent/status"].withoutSession respondWithTarget:self action:@selector(handleGetStatus:)],
 +    [[FBRoute GET:@"/agent/logs"].withoutSession respondWithTarget:self action:@selector(handleGetLogs:)],
 +    [[FBRoute GET:@"/agent/chat"].withoutSession respondWithTarget:self action:@selector(handleGetChat:)],
++    [[FBRoute GET:@"/agent/traces"].withoutSession respondWithTarget:self action:@selector(handleGetTraces:)],
++    [[FBRoute GET:@"/agent/trace/manifest"].withoutSession respondWithTarget:self action:@selector(handleGetTraceManifest:)],
++    [[FBRoute GET:@"/agent/trace/turns"].withoutSession respondWithTarget:self action:@selector(handleGetTraceTurns:)],
++    [[FBRoute GET:@"/agent/trace/file"].withoutSession respondWithTarget:self action:@selector(handleGetTraceFile:)],
 +    [[FBRoute GET:@"/agent/events"].withoutSession respondWithTarget:self action:@selector(handleGetEvents:)],
 +    [[FBRoute GET:@"/agent/step_screenshot"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshot:)],
 +    [[FBRoute GET:@"/agent/step_screenshots"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshots:)],
@@ -2519,6 +2522,63 @@ index 00000000..c764342b
 +    return OnDeviceAgentUnauthorizedPayload(authError);
 +  }
 +  return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] chat]});
++}
++
+++ (id<FBResponsePayload>)handleGetTraces:(FBRouteRequest *)request
++{
++  NSString *authError = nil;
++  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
++    return OnDeviceAgentUnauthorizedPayload(authError);
++  }
++  return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] traces]});
++}
++
+++ (id<FBResponsePayload>)handleGetTraceManifest:(FBRouteRequest *)request
++{
++  NSString *authError = nil;
++  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
++    return OnDeviceAgentUnauthorizedPayload(authError);
++  }
++  NSString *runId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"run_id"]));
++  if (runId.length == 0) {
++    return OnDeviceAgentBadRequestPayload(@"Missing query parameter: run_id");
++  }
++  NSDictionary *manifest = [[OnDeviceAgentManager shared] traceManifestForRunId:runId];
++  if (manifest.count == 0) {
++    return FBResponseWithObject(@{@"ok": @NO, @"error": @"Trace manifest not found"});
++  }
++  return FBResponseWithObject(@{@"ok": @YES, @"manifest": manifest});
++}
++
+++ (id<FBResponsePayload>)handleGetTraceTurns:(FBRouteRequest *)request
++{
++  NSString *authError = nil;
++  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
++    return OnDeviceAgentUnauthorizedPayload(authError);
++  }
++  NSString *runId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"run_id"]));
++  if (runId.length == 0) {
++    return OnDeviceAgentBadRequestPayload(@"Missing query parameter: run_id");
++  }
++  NSString *text = [[OnDeviceAgentManager shared] traceTextFileForRunId:runId name:@"turns.jsonl"] ?: @"";
++  return [[OnDeviceAgentTextPayload alloc] initWithText:text
++                                     contentType:@"application/x-ndjson;charset=UTF-8"
++                                      statusCode:kHTTPStatusCodeOK];
++}
++
+++ (id<FBResponsePayload>)handleGetTraceFile:(FBRouteRequest *)request
++{
++  NSString *authError = nil;
++  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
++    return OnDeviceAgentUnauthorizedPayload(authError);
++  }
++  NSString *runId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"run_id"]));
++  NSString *path = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"path"]));
++  if (runId.length == 0 || path.length == 0) {
++    return OnDeviceAgentBadRequestPayload(@"Missing query parameter: run_id or path");
++  }
++  NSDictionary *file = [[OnDeviceAgentManager shared] traceFileForRunId:runId path:path];
++  return [[OnDeviceAgentJSONPayload alloc] initWithObject:file ?: @{} statusCode:kHTTPStatusCodeOK];
 +}
 +
 ++ (id<FBResponsePayload>)handleGetEvents:(FBRouteRequest *)request
@@ -2688,7 +2748,6 @@ index 00000000..c764342b
 +}
 +
 +@end
-+
 diff --git a/WebDriverAgentRunner/OnDeviceAgentSecurity.m b/WebDriverAgentRunner/OnDeviceAgentSecurity.m
 new file mode 100644
 index 00000000..2c643bf9
@@ -2987,12 +3046,625 @@ index 00000000..2c643bf9
 +  );
 +}
 +
+diff --git a/WebDriverAgentRunner/OnDeviceAgentTraceRecorder.m b/WebDriverAgentRunner/OnDeviceAgentTraceRecorder.m
+new file mode 100644
+index 00000000..05ca4af3
+--- /dev/null
++++ b/WebDriverAgentRunner/OnDeviceAgentTraceRecorder.m
+@@ -0,0 +1,607 @@
++#import <Foundation/Foundation.h>
++#import <UIKit/UIKit.h>
++
++@interface OnDeviceAgentTraceRecorder : NSObject
+++ (NSString *)defaultRootDirectory;
+++ (NSArray<NSDictionary *> *)traceSummariesAtRootDirectory:(NSString *)rootDirectory;
+++ (NSDictionary *)manifestForRunId:(NSString *)runId rootDirectory:(NSString *)rootDirectory;
+++ (NSString *)textFileForRunId:(NSString *)runId name:(NSString *)name rootDirectory:(NSString *)rootDirectory;
+++ (NSDictionary *)fileBase64ForRunId:(NSString *)runId relativePath:(NSString *)relativePath rootDirectory:(NSString *)rootDirectory;
++- (instancetype)initWithRootDirectory:(NSString *)rootDirectory;
++- (NSDictionary *)startRunWithConfig:(NSDictionary *)config
++                                 task:(NSString *)task
++                 renderedSystemPrompt:(NSString *)systemPrompt
++                       defaultTemplate:(NSString *)defaultTemplate;
++- (void)appendLogLine:(NSString *)line;
++- (NSDictionary *)saveImagePNG:(NSData *)png step:(NSInteger)step stage:(NSString *)stage;
++- (void)appendEvent:(NSString *)type payload:(NSDictionary *)payload;
++- (void)appendTurn:(NSDictionary *)turn;
++- (void)finishRunWithSuccess:(BOOL)success message:(NSString *)message stopReason:(NSString *)stopReason;
++- (NSDictionary *)statusSnapshot;
++@end
++
++@interface OnDeviceAgentTraceRecorder ()
++@property (nonatomic, copy) NSString *rootDirectory;
++@property (nonatomic, copy) NSString *runDirectory;
++@property (nonatomic, copy) NSString *runId;
++@property (nonatomic, copy) NSString *startedAt;
++@property (nonatomic, copy) NSString *finishedAt;
++@property (nonatomic, copy) NSDictionary *manifest;
++@property (nonatomic, strong) dispatch_queue_t queue;
++@property (nonatomic, assign) long long seq;
++@property (nonatomic, assign) NSInteger logCount;
++@property (nonatomic, assign) NSInteger eventCount;
++@property (nonatomic, assign) NSInteger turnCount;
++@property (nonatomic, assign) NSInteger imageCount;
++@property (nonatomic, assign) BOOL recording;
++@property (nonatomic, strong) NSMutableArray<NSString *> *warnings;
++@end
++
++static NSString *OnDeviceAgentTraceNowString(void)
++{
++  NSDateFormatter *fmt = [NSDateFormatter new];
++  fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
++  fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ";
++  return [fmt stringFromDate:[NSDate date]] ?: @"";
++}
++
++static NSString *OnDeviceAgentTraceRunTimestamp(void)
++{
++  NSDateFormatter *fmt = [NSDateFormatter new];
++  fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
++  fmt.dateFormat = @"yyyy-MM-dd_HH-mm-ss";
++  return [fmt stringFromDate:[NSDate date]] ?: @"unknown";
++}
++
++static NSData *OnDeviceAgentTraceJSONData(id obj)
++{
++  if (obj == nil || ![NSJSONSerialization isValidJSONObject:obj]) {
++    obj = @{};
++  }
++  NSError *err = nil;
++  NSData *data = [NSJSONSerialization dataWithJSONObject:obj options:0 error:&err];
++  return (data.length > 0 && err == nil) ? data : [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
++}
++
++static NSString *OnDeviceAgentTraceJSONString(id obj)
++{
++  NSData *data = OnDeviceAgentTraceJSONData(obj);
++  return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"{}";
++}
++
++static NSDictionary *OnDeviceAgentTraceJSONObjectFromFile(NSString *path)
++{
++  NSData *data = [NSData dataWithContentsOfFile:path ?: @""];
++  if (data.length == 0) {
++    return @{};
++  }
++  id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
++  return [obj isKindOfClass:NSDictionary.class] ? (NSDictionary *)obj : @{};
++}
++
++static NSString *OnDeviceAgentTraceSafeName(NSString *raw)
++{
++  NSString *s = raw ?: @"";
++  NSMutableString *out = [NSMutableString string];
++  NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."];
++  for (NSUInteger i = 0; i < s.length; i++) {
++    unichar ch = [s characterAtIndex:i];
++    if ([allowed characterIsMember:ch]) {
++      [out appendFormat:@"%C", ch];
++    }
++  }
++  return out.length > 0 ? out.copy : @"";
++}
++
++static BOOL OnDeviceAgentTraceIsDotOnlyName(NSString *name)
++{
++  NSString *s = name ?: @"";
++  if (s.length == 0) {
++    return YES;
++  }
++  NSCharacterSet *notDot = [[NSCharacterSet characterSetWithCharactersInString:@"."] invertedSet];
++  return [s rangeOfCharacterFromSet:notDot].location == NSNotFound;
++}
++
++static NSString *OnDeviceAgentTraceSafeRunId(NSString *raw)
++{
++  NSString *s = raw ?: @"";
++  NSString *safe = OnDeviceAgentTraceSafeName(s);
++  if (safe.length == 0 || ![safe isEqualToString:s] || OnDeviceAgentTraceIsDotOnlyName(safe)) {
++    return @"";
++  }
++  return safe;
++}
++
++static id OnDeviceAgentTraceJSONValue(id value)
++{
++  if (value == nil || value == [NSNull null]) {
++    return nil;
++  }
++  if (![NSJSONSerialization isValidJSONObject:@{@"value": value}]) {
++    return nil;
++  }
++  return value;
++}
++
++static void OnDeviceAgentTraceSetConfigAlias(NSMutableDictionary *out, NSDictionary *config, NSString *alias, NSString *rawKey)
++{
++  id value = OnDeviceAgentTraceJSONValue(config[alias]);
++  if (value == nil) {
++    value = OnDeviceAgentTraceJSONValue(config[rawKey]);
++  }
++  if (value != nil) {
++    out[alias] = value;
++  }
++}
++
++static BOOL OnDeviceAgentTraceConfigValuePresent(NSDictionary *config, NSString *alias, NSString *rawKey)
++{
++  id value = config[alias];
++  if (value == nil || value == [NSNull null]) {
++    value = config[rawKey];
++  }
++  if ([value isKindOfClass:NSString.class]) {
++    return ((NSString *)value).length > 0;
++  }
++  return value != nil && value != [NSNull null];
++}
++
++static NSDictionary *OnDeviceAgentTraceNormalizedConfigAliases(NSDictionary *config)
++{
++  NSMutableDictionary *aliases = [NSMutableDictionary dictionary];
++  NSArray<NSArray<NSString *> *> *pairs = @[
++    @[@"task", @"ONDEVICE_AGENT_TASK"],
++    @[@"base_url", @"ONDEVICE_AGENT_BASE_URL"],
++    @[@"model", @"ONDEVICE_AGENT_MODEL"],
++    @[@"api_mode", @"ONDEVICE_AGENT_API_MODE"],
++    @[@"use_custom_system_prompt", @"ONDEVICE_AGENT_USE_CUSTOM_SYSTEM_PROMPT"],
++    @[@"system_prompt", @"ONDEVICE_AGENT_CUSTOM_SYSTEM_PROMPT"],
++    @[@"reasoning_effort", @"ONDEVICE_AGENT_REASONING_EFFORT"],
++    @[@"doubao_seed_enable_session_cache", @"ONDEVICE_AGENT_DOUBAO_SEED_ENABLE_SESSION_CACHE"],
++    @[@"half_res_screenshot", @"ONDEVICE_AGENT_HALF_RES_SCREENSHOT"],
++    @[@"use_w3c_actions_for_swipe", @"ONDEVICE_AGENT_USE_W3C_ACTIONS_FOR_SWIPE"],
++    @[@"restart_responses_by_plan", @"ONDEVICE_AGENT_RESTART_RESPONSES_BY_PLAN"],
++    @[@"max_completion_tokens", @"ONDEVICE_AGENT_MAX_COMPLETION_TOKENS"],
++    @[@"max_steps", @"ONDEVICE_AGENT_MAX_STEPS"],
++    @[@"timeout_seconds", @"ONDEVICE_AGENT_TIMEOUT_SECONDS"],
++    @[@"step_delay_seconds", @"ONDEVICE_AGENT_STEP_DELAY_SECONDS"],
++    @[@"insecure_skip_tls_verify", @"ONDEVICE_AGENT_INSECURE_SKIP_TLS_VERIFY"],
++    @[@"debug_log_raw_assistant", @"ONDEVICE_AGENT_DEBUG_LOG_RAW_ASSISTANT"],
++    @[@"remember_api_key", @"ONDEVICE_AGENT_REMEMBER_API_KEY"],
++  ];
++  for (NSArray<NSString *> *pair in pairs) {
++    if (pair.count < 2) {
++      continue;
++    }
++    OnDeviceAgentTraceSetConfigAlias(aliases, config, pair[0], pair[1]);
++  }
++  aliases[@"api_key_set"] = @(OnDeviceAgentTraceConfigValuePresent(config, @"api_key", @"ONDEVICE_AGENT_API_KEY"));
++  aliases[@"agent_token_set"] = @(OnDeviceAgentTraceConfigValuePresent(config, @"agent_token", @"ONDEVICE_AGENT_AGENT_TOKEN"));
++  return aliases.copy;
++}
++
++static NSDictionary *OnDeviceAgentTraceSanitizedConfig(NSDictionary *config)
++{
++  if (![config isKindOfClass:NSDictionary.class]) {
++    return @{};
++  }
++  NSMutableDictionary *out = [NSMutableDictionary dictionary];
++  for (id keyObj in config) {
++    if (![keyObj isKindOfClass:NSString.class]) {
++      continue;
++    }
++    NSString *key = (NSString *)keyObj;
++    id value = config[keyObj];
++    NSString *lower = key.lowercaseString ?: @"";
++    BOOL apiKeySecret = [lower isEqualToString:@"api_key"]
++      || [lower isEqualToString:@"ondevice_agent_api_key"]
++      || ([lower hasSuffix:@"_api_key"] && [lower rangeOfString:@"remember"].location == NSNotFound);
++    BOOL agentTokenSecret = [lower isEqualToString:@"agent_token"]
++      || [lower isEqualToString:@"ondevice_agent_agent_token"]
++      || [lower hasSuffix:@"_agent_token"];
++    BOOL sensitive = apiKeySecret
++      || agentTokenSecret
++      || [lower containsString:@"password"]
++      || [lower containsString:@"secret"]
++      || [lower containsString:@"authorization"]
++      || [lower containsString:@"bearer"];
++    if (sensitive) {
++      NSString *presenceKey = [key stringByAppendingString:@"_set"];
++      BOOL present = NO;
++      if ([value isKindOfClass:NSString.class]) {
++        present = ((NSString *)value).length > 0;
++      } else {
++        present = value != nil && value != [NSNull null];
++      }
++      out[presenceKey] = @(present);
++      continue;
++    }
++    if (value == nil) {
++      continue;
++    }
++    if ([NSJSONSerialization isValidJSONObject:@{key: value}]) {
++      out[key] = value;
++    }
++  }
++  [out addEntriesFromDictionary:OnDeviceAgentTraceNormalizedConfigAliases(config)];
++  return out.copy;
++}
++
++static void OnDeviceAgentTraceAppendLine(NSString *path, NSDictionary *obj)
++{
++  NSString *line = [OnDeviceAgentTraceJSONString(obj) stringByAppendingString:@"\n"];
++  NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
++  if (data.length == 0) {
++    return;
++  }
++  NSFileManager *fm = NSFileManager.defaultManager;
++  if (![fm fileExistsAtPath:path]) {
++    [fm createFileAtPath:path contents:nil attributes:nil];
++  }
++  NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:path];
++  if (h == nil) {
++    return;
++  }
++  @try {
++    [h seekToEndOfFile];
++    [h writeData:data];
++  } @catch (__unused NSException *exception) {
++  } @finally {
++    [h closeFile];
++  }
++}
++
++@implementation OnDeviceAgentTraceRecorder
++
+++ (NSString *)defaultRootDirectory
++{
++  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
++  NSString *base = paths.firstObject ?: NSTemporaryDirectory();
++  return [base stringByAppendingPathComponent:@"OnDeviceAgentTraces"];
++}
++
+++ (NSString *)runDirectoryForRunId:(NSString *)runId rootDirectory:(NSString *)rootDirectory
++{
++  NSString *safe = OnDeviceAgentTraceSafeRunId(runId);
++  if (safe.length == 0) {
++    return @"";
++  }
++  NSString *root = rootDirectory.length > 0 ? rootDirectory : [self defaultRootDirectory];
++  NSString *dir = [root stringByAppendingPathComponent:safe];
++  BOOL isDir = NO;
++  if (![NSFileManager.defaultManager fileExistsAtPath:dir isDirectory:&isDir] || !isDir) {
++    return @"";
++  }
++  return dir;
++}
++
+++ (NSArray<NSDictionary *> *)traceSummariesAtRootDirectory:(NSString *)rootDirectory
++{
++  NSString *root = rootDirectory.length > 0 ? rootDirectory : [self defaultRootDirectory];
++  NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil] ?: @[];
++  NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
++  for (NSString *name in names) {
++    NSString *safe = OnDeviceAgentTraceSafeName(name);
++    if (safe.length == 0 || ![safe isEqualToString:name] || OnDeviceAgentTraceIsDotOnlyName(safe)) {
++      continue;
++    }
++    NSString *dir = [root stringByAppendingPathComponent:name];
++    BOOL isDir = NO;
++    if (![NSFileManager.defaultManager fileExistsAtPath:dir isDirectory:&isDir] || !isDir) {
++      continue;
++    }
++    NSDictionary *m = OnDeviceAgentTraceJSONObjectFromFile([dir stringByAppendingPathComponent:@"manifest.json"]);
++    if (m.count == 0) {
++      continue;
++    }
++    NSMutableDictionary *summary = [NSMutableDictionary dictionary];
++    summary[@"run_id"] = [m[@"run_id"] isKindOfClass:NSString.class] ? m[@"run_id"] : name;
++    summary[@"started_at"] = [m[@"started_at"] isKindOfClass:NSString.class] ? m[@"started_at"] : @"";
++    summary[@"finished_at"] = [m[@"finished_at"] isKindOfClass:NSString.class] ? m[@"finished_at"] : @"";
++    summary[@"schema"] = [m[@"schema"] isKindOfClass:NSString.class] ? m[@"schema"] : @"";
++    summary[@"counts"] = [m[@"counts"] isKindOfClass:NSDictionary.class] ? m[@"counts"] : @{};
++    summary[@"final_status"] = [m[@"final_status"] isKindOfClass:NSDictionary.class] ? m[@"final_status"] : @{};
++    [items addObject:summary.copy];
++  }
++  [items sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
++    NSString *as = [a[@"started_at"] isKindOfClass:NSString.class] ? a[@"started_at"] : @"";
++    NSString *bs = [b[@"started_at"] isKindOfClass:NSString.class] ? b[@"started_at"] : @"";
++    return [bs compare:as];
++  }];
++  return items.copy;
++}
++
+++ (NSDictionary *)manifestForRunId:(NSString *)runId rootDirectory:(NSString *)rootDirectory
++{
++  NSString *dir = [self runDirectoryForRunId:runId rootDirectory:rootDirectory];
++  if (dir.length == 0) {
++    return @{};
++  }
++  return OnDeviceAgentTraceJSONObjectFromFile([dir stringByAppendingPathComponent:@"manifest.json"]);
++}
++
+++ (NSString *)textFileForRunId:(NSString *)runId name:(NSString *)name rootDirectory:(NSString *)rootDirectory
++{
++  NSString *safeName = OnDeviceAgentTraceSafeName(name);
++  if (safeName.length == 0 || ![safeName isEqualToString:name]) {
++    return @"";
++  }
++  NSString *dir = [self runDirectoryForRunId:runId rootDirectory:rootDirectory];
++  if (dir.length == 0) {
++    return @"";
++  }
++  NSString *path = [dir stringByAppendingPathComponent:safeName];
++  NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
++  return text ?: @"";
++}
++
+++ (NSDictionary *)fileBase64ForRunId:(NSString *)runId relativePath:(NSString *)relativePath rootDirectory:(NSString *)rootDirectory
++{
++  NSString *rel = relativePath ?: @"";
++  if (rel.length == 0 || [rel hasPrefix:@"/"] || [rel containsString:@".."] || [rel containsString:@"\\"]) {
++    return @{@"ok": @NO, @"error": @"Invalid path"};
++  }
++  NSString *dir = [self runDirectoryForRunId:runId rootDirectory:rootDirectory];
++  if (dir.length == 0) {
++    return @{@"ok": @NO, @"error": @"Invalid run_id"};
++  }
++  NSString *path = [dir stringByAppendingPathComponent:rel];
++  NSData *data = [NSData dataWithContentsOfFile:path];
++  if (data.length == 0) {
++    return @{@"ok": @NO, @"error": @"File not found"};
++  }
++  NSString *lower = rel.lowercaseString;
++  NSString *contentType = [lower hasSuffix:@".png"] ? @"image/png" : @"application/octet-stream";
++  return @{
++    @"ok": @YES,
++    @"run_id": OnDeviceAgentTraceSafeName(runId),
++    @"path": rel,
++    @"content_type": contentType,
++    @"base64": [data base64EncodedStringWithOptions:0] ?: @"",
++    @"bytes": @(data.length),
++  };
++}
++
++- (instancetype)initWithRootDirectory:(NSString *)rootDirectory
++{
++  self = [super init];
++  if (!self) {
++    return nil;
++  }
++  _rootDirectory = [rootDirectory copy] ?: [OnDeviceAgentTraceRecorder defaultRootDirectory];
++  _queue = dispatch_queue_create("ondevice_agent.trace_recorder", DISPATCH_QUEUE_SERIAL);
++  _warnings = [NSMutableArray array];
++  return self;
++}
++
++- (NSString *)eventsPath
++{
++  return [self.runDirectory stringByAppendingPathComponent:@"events.jsonl"];
++}
++
++- (NSString *)logsPath
++{
++  return [self.runDirectory stringByAppendingPathComponent:@"logs.jsonl"];
++}
++
++- (NSString *)turnsPath
++{
++  return [self.runDirectory stringByAppendingPathComponent:@"turns.jsonl"];
++}
++
++- (NSString *)manifestPath
++{
++  return [self.runDirectory stringByAppendingPathComponent:@"manifest.json"];
++}
++
++- (void)appendEventLocked:(NSString *)type payload:(NSDictionary *)payload
++{
++  if (!self.recording || self.runDirectory.length == 0) {
++    return;
++  }
++  self.seq += 1;
++  self.eventCount += 1;
++  NSMutableDictionary *obj = [NSMutableDictionary dictionaryWithDictionary:[payload isKindOfClass:NSDictionary.class] ? payload : @{}];
++  obj[@"seq"] = @(self.seq);
++  obj[@"ts"] = OnDeviceAgentTraceNowString();
++  obj[@"type"] = type ?: @"event";
++  OnDeviceAgentTraceAppendLine([self eventsPath], obj.copy);
++}
++
++- (void)rewriteManifestLocked
++{
++  if (self.runDirectory.length == 0 || self.manifest.count == 0) {
++    return;
++  }
++  NSMutableDictionary *m = [self.manifest mutableCopy];
++  if (self.finishedAt.length > 0) {
++    m[@"finished_at"] = self.finishedAt;
++  }
++  m[@"counts"] = @{
++    @"logs": @(self.logCount),
++    @"events": @(self.eventCount),
++    @"turns": @(self.turnCount),
++    @"images": @(self.imageCount),
++  };
++  m[@"warnings"] = self.warnings.copy ?: @[];
++  NSData *data = OnDeviceAgentTraceJSONData(m.copy);
++  NSString *tmp = [[self manifestPath] stringByAppendingString:@".tmp"];
++  [data writeToFile:tmp atomically:YES];
++  [NSFileManager.defaultManager removeItemAtPath:[self manifestPath] error:nil];
++  [NSFileManager.defaultManager moveItemAtPath:tmp toPath:[self manifestPath] error:nil];
++  self.manifest = m.copy;
++}
++
++- (NSDictionary *)startRunWithConfig:(NSDictionary *)config
++                                 task:(NSString *)task
++                 renderedSystemPrompt:(NSString *)systemPrompt
++                       defaultTemplate:(NSString *)defaultTemplate
++{
++  __block NSDictionary *status = @{};
++  dispatch_sync(self.queue, ^{
++    NSString *uuid = [[NSUUID UUID].UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
++    NSString *shortId = uuid.length >= 8 ? [uuid substringToIndex:8] : uuid;
++    self.runId = [NSString stringWithFormat:@"run_%@_%@", OnDeviceAgentTraceRunTimestamp(), shortId ?: @"00000000"];
++    self.startedAt = OnDeviceAgentTraceNowString();
++    self.finishedAt = @"";
++    self.runDirectory = [self.rootDirectory stringByAppendingPathComponent:self.runId];
++    self.seq = 0;
++    self.logCount = 0;
++    self.eventCount = 0;
++    self.turnCount = 0;
++    self.imageCount = 0;
++    self.recording = YES;
++    [self.warnings removeAllObjects];
++
++    NSFileManager *fm = NSFileManager.defaultManager;
++    [fm createDirectoryAtPath:[self.runDirectory stringByAppendingPathComponent:@"images"] withIntermediateDirectories:YES attributes:nil error:nil];
++    [fm createFileAtPath:[self eventsPath] contents:nil attributes:nil];
++    [fm createFileAtPath:[self logsPath] contents:nil attributes:nil];
++    [fm createFileAtPath:[self turnsPath] contents:nil attributes:nil];
++
++    NSDictionary *safeConfig = OnDeviceAgentTraceSanitizedConfig(config);
++    NSMutableDictionary *manifest = [NSMutableDictionary dictionary];
++    manifest[@"schema"] = @"wda.training_trace.v1";
++    manifest[@"run_id"] = self.runId ?: @"";
++    manifest[@"started_at"] = self.startedAt ?: @"";
++    manifest[@"finished_at"] = @"";
++    manifest[@"task"] = task ?: @"";
++    manifest[@"config"] = safeConfig;
++    manifest[@"system_prompt"] = @{
++      @"rendered": systemPrompt ?: @"",
++      @"template": defaultTemplate ?: @"",
++    };
++    manifest[@"counts"] = @{@"logs": @0, @"events": @0, @"turns": @0, @"images": @0};
++    manifest[@"warnings"] = @[];
++    self.manifest = manifest.copy;
++    [self rewriteManifestLocked];
++  });
++  status = [self statusSnapshot];
++  [self appendEvent:@"run_start" payload:@{@"run_id": status[@"run_id"] ?: @""}];
++  return status ?: @{};
++}
++
++- (void)appendLogLine:(NSString *)line
++{
++  NSString *copy = [line copy] ?: @"";
++  dispatch_async(self.queue, ^{
++    if (!self.recording || self.runDirectory.length == 0) {
++      return;
++    }
++    self.seq += 1;
++    self.logCount += 1;
++    OnDeviceAgentTraceAppendLine([self logsPath], @{
++      @"seq": @(self.seq),
++      @"ts": OnDeviceAgentTraceNowString(),
++      @"line": copy,
++    });
++  });
++}
++
++- (NSDictionary *)saveImagePNG:(NSData *)png step:(NSInteger)step stage:(NSString *)stage
++{
++  if (![png isKindOfClass:NSData.class] || png.length == 0) {
++    return @{};
++  }
++  __block NSDictionary *info = @{};
++  NSData *copy = [png copy];
++  NSString *safeStage = OnDeviceAgentTraceSafeName(stage ?: @"model");
++  if (safeStage.length == 0) {
++    safeStage = @"model";
++  }
++  dispatch_sync(self.queue, ^{
++    if (!self.recording || self.runDirectory.length == 0) {
++      return;
++    }
++    NSString *rel = [NSString stringWithFormat:@"images/step_%04ld_%@.png", (long)step, safeStage];
++    NSString *path = [self.runDirectory stringByAppendingPathComponent:rel];
++    BOOL ok = [copy writeToFile:path atomically:YES];
++    if (!ok) {
++      [self.warnings addObject:[NSString stringWithFormat:@"failed_to_write_image_step_%ld", (long)step]];
++      return;
++    }
++    UIImage *img = [UIImage imageWithData:copy];
++    CGSize size = img != nil ? img.size : CGSizeZero;
++    self.imageCount += 1;
++    info = @{
++      @"ref": rel,
++      @"mime_type": @"image/png",
++      @"bytes": @(copy.length),
++      @"width": @((NSInteger)size.width),
++      @"height": @((NSInteger)size.height),
++      @"stage": safeStage,
++    };
++  });
++  [self appendEvent:@"screenshot_saved" payload:@{@"step": @(step), @"image": info ?: @{}}];
++  return info ?: @{};
++}
++
++- (void)appendEvent:(NSString *)type payload:(NSDictionary *)payload
++{
++  NSString *eventType = [type copy] ?: @"event";
++  NSDictionary *eventPayload = [payload isKindOfClass:NSDictionary.class] ? [payload copy] : @{};
++  dispatch_async(self.queue, ^{
++    [self appendEventLocked:eventType payload:eventPayload];
++  });
++}
++
++- (void)appendTurn:(NSDictionary *)turn
++{
++  NSDictionary *copy = [turn isKindOfClass:NSDictionary.class] ? [turn copy] : @{};
++  dispatch_async(self.queue, ^{
++    if (!self.recording || self.runDirectory.length == 0 || copy.count == 0) {
++      return;
++    }
++    self.turnCount += 1;
++    OnDeviceAgentTraceAppendLine([self turnsPath], copy);
++  });
++}
++
++- (void)finishRunWithSuccess:(BOOL)success message:(NSString *)message stopReason:(NSString *)stopReason
++{
++  dispatch_sync(self.queue, ^{
++    if (!self.recording || self.runDirectory.length == 0) {
++      return;
++    }
++    self.finishedAt = OnDeviceAgentTraceNowString();
++    [self appendEventLocked:@"run_end" payload:@{
++      @"success": @(success),
++      @"message": message ?: @"",
++      @"stop_reason": stopReason ?: @"",
++    }];
++    NSMutableDictionary *m = [self.manifest mutableCopy];
++    m[@"finished_at"] = self.finishedAt ?: @"";
++    m[@"final_status"] = @{
++      @"success": @(success),
++      @"message": message ?: @"",
++      @"stop_reason": stopReason ?: @"",
++    };
++    self.manifest = m.copy;
++    [self rewriteManifestLocked];
++    self.recording = NO;
++  });
++}
++
++- (NSDictionary *)statusSnapshot
++{
++  __block NSDictionary *status = @{};
++  dispatch_sync(self.queue, ^{
++    status = @{
++      @"recording": @(self.recording),
++      @"run_id": self.runId ?: @"",
++      @"root": self.rootDirectory ?: @"",
++      @"run_directory": self.runDirectory ?: @"",
++      @"counts": @{
++        @"logs": @(self.logCount),
++        @"events": @(self.eventCount),
++        @"turns": @(self.turnCount),
++        @"images": @(self.imageCount),
++      },
++      @"warnings": self.warnings.copy ?: @[],
++    };
++  });
++  return status ?: @{};
++}
++
++@end
 diff --git a/WebDriverAgentRunner/OnDeviceAgentWebUI.m b/WebDriverAgentRunner/OnDeviceAgentWebUI.m
 new file mode 100644
-index 00000000..ee273429
+index 00000000..b686c1e6
 --- /dev/null
 +++ b/WebDriverAgentRunner/OnDeviceAgentWebUI.m
-@@ -0,0 +1,1615 @@
+@@ -0,0 +1,1614 @@
 +#import <Foundation/Foundation.h>
 +
 +static NSString *OnDeviceAgentPageHTML(void)
@@ -3031,12 +3703,12 @@ index 00000000..ee273429
 +    @"    .primary{background:var(--primary);color:#fff;}\n"
 +    @"    .danger{background:var(--danger);color:#fff;}\n"
 +    @"    .ghost{background:var(--card);color:inherit;border:1px solid var(--border);}\n"
-+	    @"    .muted{color:var(--muted);font-size:13px;line-height:1.45;}\n"
-+	    @"    .callout{margin-top:10px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius);padding:10px 12px;}\n"
-+	    @"    .callout-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}\n"
-+	    @"    .callout-text{font-size:13px;line-height:1.45;color:var(--muted);}\n"
-+	    @"    .callout-text code{font-size:12px;}\n"
-+	    @"    .callout-btn{min-height:32px;padding:6px 10px;border-radius:10px;flex:0 0 auto;font-size:13px;}\n"
++    @"    .muted{color:var(--muted);font-size:13px;line-height:1.45;}\n"
++    @"    .callout{margin-top:10px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius);padding:10px 12px;}\n"
++    @"    .callout-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}\n"
++    @"    .callout-text{font-size:13px;line-height:1.45;color:var(--muted);}\n"
++    @"    .callout-text code{font-size:12px;}\n"
++    @"    .callout-btn{min-height:32px;padding:6px 10px;border-radius:10px;flex:0 0 auto;font-size:13px;}\n"
 +    @"    .error{color:var(--danger);font-size:13px;line-height:1.45;margin-top:10px;white-space:pre-wrap;}\n"
 +    @"    input.invalid,textarea.invalid,select.invalid{border-color:var(--danger);box-shadow:0 0 0 3px rgba(255,59,48,0.18);}\n"
 +    @"    .check{display:flex;align-items:center;gap:10px;margin-top:10px;user-select:none;}\n"
@@ -3071,28 +3743,28 @@ index 00000000..ee273429
 +    @"</head>\n"
 +    @"<body>\n"
 +    @"  <div class=\"container\">\n"
-+	    @"    <h2 data-i18n=\"h_title\">iOS WDA On‑Device Agent (WDA Runner)</h2>\n"
-+		    @"    <div class=\"muted\">\n"
-+		    @"      <div data-i18n-html=\"intro_1\">This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).</div>\n"
-+		    @"      <div data-i18n-html=\"intro_2\">If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.</div>\n"
-+		    @"      <div data-i18n-html=\"wireless_hint_short\">Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.</div>\n"
-+		    @"    </div>\n"
-+        @"    <h3 data-i18n=\"h_access\">Access</h3>\n"
-+        @"    <div class=\"callout\">\n"
-+        @"      <div class=\"callout-row\">\n"
-+        @"        <div class=\"callout-text\" data-i18n-html=\"help_agent_token\">Agent Token protects <code>/agent/*</code> over Wi‑Fi/LAN. Rotate it to invalidate existing sessions.</div>\n"
-+        @"        <button type=\"button\" class=\"ghost callout-btn\" onclick=\"rotateToken()\" data-i18n=\"btn_rotate_token\">Rotate token</button>\n"
-+        @"      </div>\n"
-+        @"      <div id=\"rotate_token_row\" style=\"display:none;margin-top:10px\">\n"
-+        @"        <label style=\"margin-top:0\" data-i18n=\"label_new_token\">New token</label>\n"
-+        @"        <div style=\"display:flex;gap:8px;align-items:center;flex-wrap:wrap;\">\n"
-+        @"          <input id=\"rotate_token_value\" class=\"mono\" readonly style=\"flex:1 1 240px;\" />\n"
-+        @"          <button type=\"button\" class=\"ghost btn-sm\" onclick=\"copyRotatedToken()\" data-i18n=\"btn_copy\">Copy</button>\n"
-+        @"        </div>\n"
-+        @"        <div class=\"muted\" style=\"margin-top:6px\" data-i18n=\"help_new_token\">Keep this token secret. Anyone with it can access /agent/* over LAN.</div>\n"
-+        @"      </div>\n"
-+        @"    </div>\n"
-+	    @"    <label data-i18n=\"label_base_url\">Base URL (OpenAI-compatible)</label>\n"
++    @"    <h2 data-i18n=\"h_title\">iOS WDA On‑Device Agent (WDA Runner)</h2>\n"
++    @"    <div class=\"muted\">\n"
++    @"      <div data-i18n-html=\"intro_1\">This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).</div>\n"
++    @"      <div data-i18n-html=\"intro_2\">If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.</div>\n"
++    @"      <div data-i18n-html=\"wireless_hint_short\">Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.</div>\n"
++    @"    </div>\n"
++    @"    <h3 data-i18n=\"h_access\">Access</h3>\n"
++    @"    <div class=\"callout\">\n"
++    @"      <div class=\"callout-row\">\n"
++    @"        <div class=\"callout-text\" data-i18n-html=\"help_agent_token\">Agent Token protects <code>/agent/*</code> over Wi‑Fi/LAN. Rotate it to invalidate existing sessions.</div>\n"
++    @"        <button type=\"button\" class=\"ghost callout-btn\" onclick=\"rotateToken()\" data-i18n=\"btn_rotate_token\">Rotate token</button>\n"
++    @"      </div>\n"
++    @"      <div id=\"rotate_token_row\" style=\"display:none;margin-top:10px\">\n"
++    @"        <label style=\"margin-top:0\" data-i18n=\"label_new_token\">New token</label>\n"
++    @"        <div style=\"display:flex;gap:8px;align-items:center;flex-wrap:wrap;\">\n"
++    @"          <input id=\"rotate_token_value\" class=\"mono\" readonly style=\"flex:1 1 240px;\" />\n"
++    @"          <button type=\"button\" class=\"ghost btn-sm\" onclick=\"copyRotatedToken()\" data-i18n=\"btn_copy\">Copy</button>\n"
++    @"        </div>\n"
++    @"        <div class=\"muted\" style=\"margin-top:6px\" data-i18n=\"help_new_token\">Keep this token secret. Anyone with it can access /agent/* over LAN.</div>\n"
++    @"      </div>\n"
++    @"    </div>\n"
++    @"    <label data-i18n=\"label_base_url\">Base URL (OpenAI-compatible)</label>\n"
 +    @"    <input id=\"base_url\" class=\"mono\" placeholder=\"https://...\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
 +    @"    <label data-i18n=\"label_model\">Model</label>\n"
 +    @"    <input id=\"model\" class=\"mono\" placeholder=\"gpt-4o-mini / ...\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" />\n"
@@ -3194,18 +3866,18 @@ index 00000000..ee273429
 +    @"        intro_1: 'This page configures and starts an agent running <b>inside</b> WebDriverAgentRunner (XCTest).',\n"
 +    @"        intro_2: 'If LAN access fails, try opening this page with <code>http://127.0.0.1:8100/agent</code> on the iPhone.',\n"
 +    @"        wireless_hint_short: 'Tip: If LAN access is unreachable, enable Runner <b>Wireless Data</b> in iPhone Settings, then reopen Runner.',\n"
-+        @"        h_access: 'Access',\n"
-+        @"        help_agent_token: 'Agent Token protects <code>/agent/*</code> over Wi‑Fi/LAN. Rotate it to invalidate existing sessions.',\n"
-+        @"        btn_rotate_token: 'Rotate token',\n"
-+        @"        label_new_token: 'New token',\n"
-+        @"        help_new_token: 'Keep this token secret. Anyone with it can access /agent/* over LAN.',\n"
-+        @"        btn_copy: 'Copy',\n"
++    @"        h_access: 'Access',\n"
++    @"        help_agent_token: 'Agent Token protects <code>/agent/*</code> over Wi‑Fi/LAN. Rotate it to invalidate existing sessions.',\n"
++    @"        btn_rotate_token: 'Rotate token',\n"
++    @"        label_new_token: 'New token',\n"
++    @"        help_new_token: 'Keep this token secret. Anyone with it can access /agent/* over LAN.',\n"
++    @"        btn_copy: 'Copy',\n"
 +    @"        label_base_url: 'Base URL (OpenAI-compatible)',\n"
 +    @"        label_model: 'Model',\n"
-+        @"        label_api_mode: 'API Mode',\n"
-+        @"        opt_chat_completions: 'Chat Completions',\n"
-+        @"        opt_responses: 'Responses',\n"
-+        @"        cb_doubao_cache: 'Enable Session Cache (Doubao Seed)',\n"
++    @"        label_api_mode: 'API Mode',\n"
++    @"        opt_chat_completions: 'Chat Completions',\n"
++    @"        opt_responses: 'Responses',\n"
++    @"        cb_doubao_cache: 'Enable Session Cache (Doubao Seed)',\n"
 +    @"        label_api_key: 'API Key',\n"
 +    @"        cb_show_api_key: 'Show API key',\n"
 +    @"        cb_remember_api_key: 'Remember API key on device (NOT recommended for shared devices)',\n"
@@ -3225,13 +3897,13 @@ index 00000000..ee273429
 +    @"        h_system_prompt: 'System Prompt',\n"
 +    @"        help_system_prompt: 'Custom system prompt only takes effect when the checkbox is enabled. Date placeholders (replaced at runtime):',\n"
 +    @"        cb_use_custom_system_prompt: 'Use custom system prompt',\n"
-+        @"        btn_restore_system_prompt: 'Restore default template',\n"
-+        @"        ph_system_prompt: '(default system prompt)',\n"
-+        @"        cb_insecure_skip_tls: 'Insecure TLS (model requests only; debug only; MITM risk)',\n"
-+        @"        cb_half_res_screenshot: 'Half-resolution screenshots',\n"
-+        @"        cb_use_w3c_actions_for_swipe: 'Use W3C actions for swipe',\n"
-+        @"        cb_restart_responses_by_plan: 'Restart history when a plan item completes (Responses)',\n"
-+        @"        cb_debug_raw: 'Debug raw conversation (OFF by default; API key / Authorization / image base64 are redacted)',\n"
++    @"        btn_restore_system_prompt: 'Restore default template',\n"
++    @"        ph_system_prompt: '(default system prompt)',\n"
++    @"        cb_insecure_skip_tls: 'Insecure TLS (model requests only; debug only; MITM risk)',\n"
++    @"        cb_half_res_screenshot: 'Half-resolution screenshots',\n"
++    @"        cb_use_w3c_actions_for_swipe: 'Use W3C actions for swipe',\n"
++    @"        cb_restart_responses_by_plan: 'Restart history when a plan item completes (Responses)',\n"
++    @"        cb_debug_raw: 'Debug raw conversation (OFF by default; API key / Authorization / image base64 are redacted)',\n"
 +    @"        btn_save: 'Save',\n"
 +    @"        btn_start: 'Start',\n"
 +    @"        btn_stop: 'Stop',\n"
@@ -3278,18 +3950,18 @@ index 00000000..ee273429
 +    @"        intro_1: '此页面用于配置并启动一个运行在 <b>WebDriverAgentRunner (XCTest)</b> 内部的智能体。',\n"
 +    @"        intro_2: '如果局域网访问失败，请在 iPhone 上用 <code>http://127.0.0.1:8100/agent</code> 打开此页面。',\n"
 +    @"        wireless_hint_short: '提示：如果局域网不可达，请在 iPhone 设置中为 Runner 开启<b>无线数据</b>，然后重新打开 Runner。',\n"
-+        @"        h_access: '访问控制',\n"
-+        @"        help_agent_token: 'Agent Token 用于保护局域网中的 <code>/agent/*</code>。旋转 token 会使已存在的会话失效。',\n"
-+        @"        btn_rotate_token: '旋转 token',\n"
-+        @"        label_new_token: '新 token',\n"
-+        @"        help_new_token: '请妥善保管。任何人拿到它都可以在局域网中访问 /agent/*。',\n"
-+        @"        btn_copy: '复制',\n"
++    @"        h_access: '访问控制',\n"
++    @"        help_agent_token: 'Agent Token 用于保护局域网中的 <code>/agent/*</code>。旋转 token 会使已存在的会话失效。',\n"
++    @"        btn_rotate_token: '旋转 token',\n"
++    @"        label_new_token: '新 token',\n"
++    @"        help_new_token: '请妥善保管。任何人拿到它都可以在局域网中访问 /agent/*。',\n"
++    @"        btn_copy: '复制',\n"
 +    @"        label_base_url: 'Base URL（OpenAI 兼容）',\n"
 +    @"        label_model: '模型',\n"
-+        @"        label_api_mode: 'API 模式',\n"
-+        @"        opt_chat_completions: 'Chat Completions',\n"
-+        @"        opt_responses: 'Responses',\n"
-+        @"        cb_doubao_cache: '启用会话缓存（豆包 Seed）',\n"
++    @"        label_api_mode: 'API 模式',\n"
++    @"        opt_chat_completions: 'Chat Completions',\n"
++    @"        opt_responses: 'Responses',\n"
++    @"        cb_doubao_cache: '启用会话缓存（豆包 Seed）',\n"
 +    @"        label_api_key: 'API Key',\n"
 +    @"        cb_show_api_key: '显示 API key',\n"
 +    @"        cb_remember_api_key: '在设备上记住 API key（不建议共享设备）',\n"
@@ -3309,13 +3981,13 @@ index 00000000..ee273429
 +    @"        h_system_prompt: '系统提示词',\n"
 +    @"        help_system_prompt: '自定义系统提示词仅在勾选后生效。日期占位符（运行时替换）：',\n"
 +    @"        cb_use_custom_system_prompt: '使用自定义系统提示词',\n"
-+        @"        btn_restore_system_prompt: '恢复默认模板',\n"
-+        @"        ph_system_prompt: '（默认系统提示词）',\n"
-+        @"        cb_insecure_skip_tls: '不安全 TLS（仅模型请求；仅调试；有中间人风险）',\n"
-+        @"        cb_half_res_screenshot: '半分辨率截图',\n"
-+        @"        cb_use_w3c_actions_for_swipe: 'Swipe 使用 W3C actions',\n"
-+        @"        cb_restart_responses_by_plan: '计划项完成后重启对话历史（Responses）',\n"
-+        @"        cb_debug_raw: '调试：记录原始对话（默认关闭；API key / Authorization / 图片 base64 会脱敏）',\n"
++    @"        btn_restore_system_prompt: '恢复默认模板',\n"
++    @"        ph_system_prompt: '（默认系统提示词）',\n"
++    @"        cb_insecure_skip_tls: '不安全 TLS（仅模型请求；仅调试；有中间人风险）',\n"
++    @"        cb_half_res_screenshot: '半分辨率截图',\n"
++    @"        cb_use_w3c_actions_for_swipe: 'Swipe 使用 W3C actions',\n"
++    @"        cb_restart_responses_by_plan: '计划项完成后重启对话历史（Responses）',\n"
++    @"        cb_debug_raw: '调试：记录原始对话（默认关闭；API key / Authorization / 图片 base64 会脱敏）',\n"
 +    @"        btn_save: '保存',\n"
 +    @"        btn_start: '开始',\n"
 +    @"        btn_stop: '停止',\n"
@@ -3539,13 +4211,13 @@ index 00000000..ee273429
 +    @"        document.execCommand('copy');\n"
 +    @"      } catch (e) {}\n"
 +    @"    }\n"
-+	    @"    function restoreSystemPromptDefault(){\n"
-+	    @"      const el = document.getElementById('system_prompt');\n"
-+	    @"      if (!el) return;\n"
-+	    @"      el.value = DEFAULT_SYSTEM_PROMPT;\n"
-+	    @"      markDirty();\n"
-+	    @"    }\n"
-+	    @"    function openEditorPage(targetId){\n"
++    @"    function restoreSystemPromptDefault(){\n"
++    @"      const el = document.getElementById('system_prompt');\n"
++    @"      if (!el) return;\n"
++    @"      el.value = DEFAULT_SYSTEM_PROMPT;\n"
++    @"      markDirty();\n"
++    @"    }\n"
++    @"    function openEditorPage(targetId){\n"
 +    @"      const t = encodeURIComponent((targetId || '').toString());\n"
 +    @"      window.location.href = `/agent/edit?target=${t}`;\n"
 +    @"    }\n"
@@ -4125,11 +4797,11 @@ index 00000000..ee273429
 +    @"        lastChatItems = [];\n"
 +    @"        renderChat();\n"
 +    @"      }\n"
-+	    @"      } finally {\n"
-+	    @"        refreshInFlight = false;\n"
++    @"      } finally {\n"
++    @"        refreshInFlight = false;\n"
 +    @"        updateReadinessUI();\n"
-+	    @"      }\n"
-+	    @"    }\n"
++    @"      }\n"
++    @"    }\n"
 +    @"    async function saveCfg(){\n"
 +    @"      await commitIME();\n"
 +    @"      if (!validateBeforeStart()) return;\n"
@@ -4147,10 +4819,10 @@ index 00000000..ee273429
 +    @"        setFormError([resp.error]);\n"
 +    @"      }\n"
 +    @"    }\n"
-+	    @"    async function stop(){\n"
-+	    @"      await api('/agent/stop', 'POST');\n"
-+	    @"      await refresh();\n"
-+	    @"    }\n"
++    @"    async function stop(){\n"
++    @"      await api('/agent/stop', 'POST');\n"
++    @"      await refresh();\n"
++    @"    }\n"
 +    @"    function isPageVisible(){ return !document.hidden; }\n"
 +    @"    function closeEvents(){\n"
 +    @"      if (!events) return;\n"
@@ -4415,64 +5087,64 @@ index 00000000..ee273429
 +    @"    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",\"Courier New\",monospace;}\n"
 +    @"  </style>\n";
 +
-+	  static NSString *const kOnDeviceAgentEditPageBody =
-+	    @"</head>\n"
-+	    @"<body>\n"
-+	    @"  <div class=\"bar\">\n"
-+	    @"    <button class=\"ghost\" onclick=\"goBack()\" data-i18n=\"btn_back\">Back</button>\n"
-+	    @"    <div id=\"title\" class=\"title\">Editor</div>\n"
-+	    @"    <button id=\"restore_default\" class=\"ghost\" style=\"display:none\" onclick=\"restoreDefault()\" data-i18n=\"btn_restore_default\">Restore default</button>\n"
-+	    @"    <button class=\"primary\" onclick=\"saveAndClose()\" data-i18n=\"btn_done\">Done</button>\n"
-+	    @"  </div>\n"
-+	    @"  <div id=\"hint\" class=\"muted\"></div>\n"
-+	    @"  <label id=\"custom_row\" class=\"check muted\" style=\"display:none\"><input type=\"checkbox\" id=\"use_custom_system_prompt\" /> <span data-i18n=\"cb_use_custom_system_prompt\">Use custom system prompt</span></label>\n"
-+	    @"  <textarea id=\"text\" placeholder=\"\"></textarea>\n"
-+	    @"  <script>\n";
++  static NSString *const kOnDeviceAgentEditPageBody =
++    @"</head>\n"
++    @"<body>\n"
++    @"  <div class=\"bar\">\n"
++    @"    <button class=\"ghost\" onclick=\"goBack()\" data-i18n=\"btn_back\">Back</button>\n"
++    @"    <div id=\"title\" class=\"title\">Editor</div>\n"
++    @"    <button id=\"restore_default\" class=\"ghost\" style=\"display:none\" onclick=\"restoreDefault()\" data-i18n=\"btn_restore_default\">Restore default</button>\n"
++    @"    <button class=\"primary\" onclick=\"saveAndClose()\" data-i18n=\"btn_done\">Done</button>\n"
++    @"  </div>\n"
++    @"  <div id=\"hint\" class=\"muted\"></div>\n"
++    @"  <label id=\"custom_row\" class=\"check muted\" style=\"display:none\"><input type=\"checkbox\" id=\"use_custom_system_prompt\" /> <span data-i18n=\"cb_use_custom_system_prompt\">Use custom system prompt</span></label>\n"
++    @"  <textarea id=\"text\" placeholder=\"\"></textarea>\n"
++    @"  <script>\n";
 +
-+	  static NSString *const kOnDeviceAgentEditPageJS =
-+	    @"    const DEFAULT_SYSTEM_PROMPT = __DEFAULT_SYSTEM_PROMPT_JSON__;\n"
-+	    @"    const LANG = ((navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en';\n"
-+	    @"    const I18N = {\n"
-+	    @"      en: {\n"
-+	    @"        btn_back: 'Back',\n"
-+	    @"        btn_restore_default: 'Restore default',\n"
-+	    @"        btn_done: 'Done',\n"
-+	    @"        cb_use_custom_system_prompt: 'Use custom system prompt',\n"
-+	    @"        title_task: 'Task',\n"
-+	    @"        title_system_prompt: 'System Prompt',\n"
-+	    @"        title_editor: 'Editor',\n"
-+	    @"        hint_task: 'Edit the task description.',\n"
-+	    @"        hint_system_prompt: 'Custom system prompt only takes effect when enabled.',\n"
-+	    @"        hint_unknown: 'Unknown target.',\n"
-+	    @"      },\n"
-+	    @"      zh: {\n"
-+	    @"        btn_back: '返回',\n"
-+	    @"        btn_restore_default: '恢复默认',\n"
-+	    @"        btn_done: '完成',\n"
-+	    @"        cb_use_custom_system_prompt: '使用自定义系统提示词',\n"
-+	    @"        title_task: '任务',\n"
-+	    @"        title_system_prompt: '系统提示词',\n"
-+	    @"        title_editor: '编辑',\n"
-+	    @"        hint_task: '编辑任务描述。',\n"
-+	    @"        hint_system_prompt: '自定义系统提示词仅在勾选后生效。',\n"
-+	    @"        hint_unknown: '未知目标。',\n"
-+	    @"      }\n"
-+	    @"    };\n"
-+	    @"    function t(key){\n"
-+	    @"      const table = I18N[LANG] || I18N.en;\n"
-+	    @"      return (table && table[key]) ? table[key] : ((I18N.en && I18N.en[key]) ? I18N.en[key] : key);\n"
-+	    @"    }\n"
-+	    @"    function applyI18n(){\n"
-+	    @"      const nodes = document.querySelectorAll('[data-i18n]');\n"
-+	    @"      for (const el of nodes) {\n"
-+	    @"        const key = el.getAttribute('data-i18n') || '';\n"
-+	    @"        if (!key) continue;\n"
-+	    @"        el.textContent = t(key);\n"
-+	    @"      }\n"
-+	    @"    }\n"
-+	    @"    const qs = new URLSearchParams(window.location.search || '');\n"
-+	    @"    const target = (qs.get('target') || '').toString();\n"
-+	    @"    let composing = false;\n"
++  static NSString *const kOnDeviceAgentEditPageJS =
++    @"    const DEFAULT_SYSTEM_PROMPT = __DEFAULT_SYSTEM_PROMPT_JSON__;\n"
++    @"    const LANG = ((navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en';\n"
++    @"    const I18N = {\n"
++    @"      en: {\n"
++    @"        btn_back: 'Back',\n"
++    @"        btn_restore_default: 'Restore default',\n"
++    @"        btn_done: 'Done',\n"
++    @"        cb_use_custom_system_prompt: 'Use custom system prompt',\n"
++    @"        title_task: 'Task',\n"
++    @"        title_system_prompt: 'System Prompt',\n"
++    @"        title_editor: 'Editor',\n"
++    @"        hint_task: 'Edit the task description.',\n"
++    @"        hint_system_prompt: 'Custom system prompt only takes effect when enabled.',\n"
++    @"        hint_unknown: 'Unknown target.',\n"
++    @"      },\n"
++    @"      zh: {\n"
++    @"        btn_back: '返回',\n"
++    @"        btn_restore_default: '恢复默认',\n"
++    @"        btn_done: '完成',\n"
++    @"        cb_use_custom_system_prompt: '使用自定义系统提示词',\n"
++    @"        title_task: '任务',\n"
++    @"        title_system_prompt: '系统提示词',\n"
++    @"        title_editor: '编辑',\n"
++    @"        hint_task: '编辑任务描述。',\n"
++    @"        hint_system_prompt: '自定义系统提示词仅在勾选后生效。',\n"
++    @"        hint_unknown: '未知目标。',\n"
++    @"      }\n"
++    @"    };\n"
++    @"    function t(key){\n"
++    @"      const table = I18N[LANG] || I18N.en;\n"
++    @"      return (table && table[key]) ? table[key] : ((I18N.en && I18N.en[key]) ? I18N.en[key] : key);\n"
++    @"    }\n"
++    @"    function applyI18n(){\n"
++    @"      const nodes = document.querySelectorAll('[data-i18n]');\n"
++    @"      for (const el of nodes) {\n"
++    @"        const key = el.getAttribute('data-i18n') || '';\n"
++    @"        if (!key) continue;\n"
++    @"        el.textContent = t(key);\n"
++    @"      }\n"
++    @"    }\n"
++    @"    const qs = new URLSearchParams(window.location.search || '');\n"
++    @"    const target = (qs.get('target') || '').toString();\n"
++    @"    let composing = false;\n"
 +    @"    function isEditing(){\n"
 +    @"      const el = document.activeElement;\n"
 +    @"      if (!el || !el.tagName) return false;\n"
@@ -4517,39 +5189,39 @@ index 00000000..ee273429
 +    @"      document.body.style.height = vv.height + 'px';\n"
 +    @"      document.body.style.transform = `translateY(${vv.offsetTop || 0}px)`;\n"
 +    @"    }\n"
-+	    @"    async function load(){\n"
-+	    @"      updateViewport();\n"
-+	    @"      applyI18n();\n"
-+	    @"      const st = await api('/agent/status');\n"
-+	    @"      const cfg = st.config || {};\n"
++    @"    async function load(){\n"
++    @"      updateViewport();\n"
++    @"      applyI18n();\n"
++    @"      const st = await api('/agent/status');\n"
++    @"      const cfg = st.config || {};\n"
 +    @"      const titleEl = document.getElementById('title');\n"
 +    @"      const hintEl = document.getElementById('hint');\n"
 +    @"      const ta = document.getElementById('text');\n"
 +    @"      const customRow = document.getElementById('custom_row');\n"
 +    @"      const useCustom = document.getElementById('use_custom_system_prompt');\n"
-+	    @"      const restoreBtn = document.getElementById('restore_default');\n"
-+	    @"      if (!titleEl || !hintEl || !ta || !customRow || !useCustom || !restoreBtn) return;\n"
-+	    @"      if (target === 'task') {\n"
-+	    @"        titleEl.textContent = t('title_task');\n"
-+	    @"        hintEl.textContent = t('hint_task');\n"
-+	    @"        ta.className = '';\n"
-+	    @"        ta.value = (cfg.task || '').toString();\n"
-+	    @"        customRow.style.display = 'none';\n"
-+	    @"        restoreBtn.style.display = 'none';\n"
-+	    @"      } else if (target === 'system_prompt') {\n"
-+	    @"        titleEl.textContent = t('title_system_prompt');\n"
-+	    @"        hintEl.textContent = t('hint_system_prompt');\n"
-+	    @"        ta.className = 'mono';\n"
-+	    @"        const sp = (cfg.system_prompt || '').toString();\n"
++    @"      const restoreBtn = document.getElementById('restore_default');\n"
++    @"      if (!titleEl || !hintEl || !ta || !customRow || !useCustom || !restoreBtn) return;\n"
++    @"      if (target === 'task') {\n"
++    @"        titleEl.textContent = t('title_task');\n"
++    @"        hintEl.textContent = t('hint_task');\n"
++    @"        ta.className = '';\n"
++    @"        ta.value = (cfg.task || '').toString();\n"
++    @"        customRow.style.display = 'none';\n"
++    @"        restoreBtn.style.display = 'none';\n"
++    @"      } else if (target === 'system_prompt') {\n"
++    @"        titleEl.textContent = t('title_system_prompt');\n"
++    @"        hintEl.textContent = t('hint_system_prompt');\n"
++    @"        ta.className = 'mono';\n"
++    @"        const sp = (cfg.system_prompt || '').toString();\n"
 +    @"        ta.value = sp.length ? sp : DEFAULT_SYSTEM_PROMPT;\n"
 +    @"        customRow.style.display = '';\n"
-+	    @"        useCustom.checked = !!cfg.use_custom_system_prompt;\n"
-+	    @"        restoreBtn.style.display = '';\n"
-+	    @"      } else {\n"
-+	    @"        titleEl.textContent = t('title_editor');\n"
-+	    @"        hintEl.textContent = t('hint_unknown');\n"
-+	    @"        ta.className = 'mono';\n"
-+	    @"        ta.value = '';\n"
++    @"        useCustom.checked = !!cfg.use_custom_system_prompt;\n"
++    @"        restoreBtn.style.display = '';\n"
++    @"      } else {\n"
++    @"        titleEl.textContent = t('title_editor');\n"
++    @"        hintEl.textContent = t('hint_unknown');\n"
++    @"        ta.className = 'mono';\n"
++    @"        ta.value = '';\n"
 +    @"        customRow.style.display = 'none';\n"
 +    @"        restoreBtn.style.display = 'none';\n"
 +    @"      }\n"
@@ -4607,9 +5279,8 @@ index 00000000..ee273429
 +  html = [html stringByReplacingOccurrencesOfString:@"__DEFAULT_SYSTEM_PROMPT_JSON__" withString:OnDeviceAgentJSONStringLiteral(defaultSystemPrompt)];
 +  return html;
 +}
-+
 diff --git a/WebDriverAgentRunner/UITestingUITests.m b/WebDriverAgentRunner/UITestingUITests.m
-index ad2ff455..7f4e656b 100644
+index ad2ff455..66020390 100644
 --- a/WebDriverAgentRunner/UITestingUITests.m
 +++ b/WebDriverAgentRunner/UITestingUITests.m
 @@ -2,11 +2,15 @@
@@ -4630,7 +5301,7 @@ index ad2ff455..7f4e656b 100644
  
  #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
  #import <WebDriverAgentLib/FBConfiguration.h>
-@@ -14,6 +18,2898 @@
+@@ -14,6 +18,3122 @@
  #import <WebDriverAgentLib/FBWebServer.h>
  #import <WebDriverAgentLib/XCTestCase.h>
  
@@ -4703,6 +5374,24 @@ index ad2ff455..7f4e656b 100644
 +- (NSDictionary *)statusWithDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt;
 +- (NSArray<NSString *> *)logs;
 +- (NSArray<NSDictionary *> *)chat;
++- (NSArray<NSDictionary *> *)traces;
++- (NSDictionary *)traceManifestForRunId:(NSString *)runId;
++- (NSString *)traceTextFileForRunId:(NSString *)runId name:(NSString *)name;
++- (NSDictionary *)traceFileForRunId:(NSString *)runId path:(NSString *)path;
++@end
++
++// Forward declarations for symbols implemented in OnDeviceAgentExports.m / OnDeviceAgentRoutes.m
++@interface OnDeviceAgentManager (OnDeviceAgentExportsForward)
++- (void)storeStepScreenshotPNG:(NSData *)png step:(NSInteger)step token:(NSInteger)token;
++@end
++
++@class OnDeviceAgentEventStreamResponse;
++@interface OnDeviceAgentEventHub : NSObject
+++ (instancetype)shared;
++- (void)addClient:(OnDeviceAgentEventStreamResponse *)client;
++- (void)removeClient:(OnDeviceAgentEventStreamResponse *)client;
++- (void)broadcastEvent:(NSString *)event data:(NSString *)data;
++- (void)broadcastJSONObject:(id)obj event:(NSString *)event;
 +@end
 +
 +static UIWindow *gOnDeviceAgentConnectivityAlertWindow = nil;
@@ -6025,6 +6714,8 @@ index ad2ff455..7f4e656b 100644
 +typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 +typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 +
++#import "OnDeviceAgentTraceRecorder.m"
++
 +@interface OnDeviceAgent : NSObject <NSURLSessionDelegate>
 +@property (atomic, assign) BOOL stopRequested;
 +@property (nonatomic, copy) NSDictionary *config;
@@ -6032,6 +6723,7 @@ index ad2ff455..7f4e656b 100644
 +@property (nonatomic, copy) OnDeviceAgentChatBlock chat;
 +@property (nonatomic, copy) OnDeviceAgentFinishBlock finish;
 +@property (nonatomic, copy) OnDeviceAgentScreenshotBlock screenshot;
++@property (nonatomic, strong) OnDeviceAgentTraceRecorder *traceRecorder;
 +@property (nonatomic, strong) NSURLSession *session;
 +@property (atomic, strong) NSURLSessionTask *inflightTask;
 +@property (nonatomic, strong) NSMutableArray<NSDictionary *> *context;
@@ -6045,6 +6737,8 @@ index ad2ff455..7f4e656b 100644
 +@property (atomic, assign) long long usageOutputTokens;
 +@property (atomic, assign) long long usageCachedTokens;
 +@property (atomic, assign) long long usageTotalTokens;
++
++- (void)emit:(NSString *)line;
 +@end
 +
 +#import "OnDeviceAgentMemory.m"
@@ -6053,7 +6747,7 @@ index ad2ff455..7f4e656b 100644
 +
 +@implementation OnDeviceAgent
 +
-+- (instancetype)initWithConfig:(NSDictionary *)config log:(OnDeviceAgentLogBlock)log chat:(OnDeviceAgentChatBlock)chat screenshot:(OnDeviceAgentScreenshotBlock)screenshot finish:(OnDeviceAgentFinishBlock)finish
++- (instancetype)initWithConfig:(NSDictionary *)config log:(OnDeviceAgentLogBlock)log chat:(OnDeviceAgentChatBlock)chat screenshot:(OnDeviceAgentScreenshotBlock)screenshot traceRecorder:(OnDeviceAgentTraceRecorder *)traceRecorder finish:(OnDeviceAgentFinishBlock)finish
 +{
 +  self = [super init];
 +  if (!self) {
@@ -6063,6 +6757,7 @@ index ad2ff455..7f4e656b 100644
 +  _log = [log copy];
 +  _chat = [chat copy];
 +  _screenshot = [screenshot copy];
++  _traceRecorder = traceRecorder;
 +  _finish = [finish copy];
 +  _stopRequested = NO;
 +  _planChecklist = @[];
@@ -6099,6 +6794,15 @@ index ad2ff455..7f4e656b 100644
 +  if (self.chat) {
 +    self.chat(item ?: @{} );
 +  }
++}
++
++- (void)appendTraceTurn:(NSMutableDictionary *)turn
++{
++  if (![turn isKindOfClass:NSMutableDictionary.class]) {
++    return;
++  }
++  turn[@"ts_end"] = OnDeviceAgentNowString();
++  [self.traceRecorder appendTurn:turn.copy];
 +}
 +
 +- (NSString *)buildSystemPrompt
@@ -6244,6 +6948,10 @@ index ad2ff455..7f4e656b 100644
 +    if (!useResponses) {
 +      [self.context addObject:@{@"role": @"system", @"content": renderedSystemPrompt}];
 +    }
++  [self.traceRecorder startRunWithConfig:self.config
++                                    task:task
++                    renderedSystemPrompt:renderedSystemPrompt
++                          defaultTemplate:systemTemplate];
 +  BOOL captureRawConversation = OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], NO);
 +
 +  for (NSInteger step = 0; step < maxSteps; step++) {
@@ -6324,6 +7032,26 @@ index ad2ff455..7f4e656b 100644
 +      }
 +      }
 +
++        NSDictionary *traceImage = [self.traceRecorder saveImagePNG:png step:step stage:@"model"] ?: @{};
++        NSMutableDictionary *traceTurn = [NSMutableDictionary dictionary];
++        traceTurn[@"schema"] = @"wda.training_turn.v1";
++        traceTurn[@"step"] = @(step);
++        traceTurn[@"ts_start"] = OnDeviceAgentNowString();
++        traceTurn[@"state"] = @{
++          @"user_text": textContent ?: @"",
++          @"screen_info_text": screenInfo ?: @"{}",
++          @"image": traceImage,
++          @"working_note_before": self.workingNote ?: @"",
++          @"previous_recoverable_failure": lastRecoverableFailureText ?: @"",
++          @"restarted_responses_chain": @(restartedThisStep),
++        };
++        traceTurn[@"model_request"] = @{
++          @"api_mode": apiMode ?: @"",
++          @"model": OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentModelKey]),
++          @"previous_response_id": self.previousResponseId ?: @"",
++          @"capture_raw_conversation": @(captureRawConversation),
++        };
++
 +        NSDictionary *chatUserMessage = @{
 +          @"role": @"user",
 +          @"content": @[
@@ -6380,12 +7108,21 @@ index ad2ff455..7f4e656b 100644
 +      if (resp == nil) {
 +        if (self.stopRequested) {
 +          [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
++          traceTurn[@"terminal"] = @YES;
++          traceTurn[@"terminal_error"] = @{@"kind": @"stop_requested", @"message": @"Stopped"};
++          [self appendTraceTurn:traceTurn];
 +          if (self.finish) {
 +            self.finish(NO, @"Stopped");
 +          }
 +          return;
 +        }
 +        [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"llm_call_failed", nil, @{@"error": callErr.localizedDescription ?: callErr ?: @"unknown"})];
++        traceTurn[@"terminal"] = @YES;
++        traceTurn[@"terminal_error"] = @{
++          @"kind": @"llm_call_failed",
++          @"message": callErr.localizedDescription ?: @"LLM call failed",
++        };
++        [self appendTraceTurn:traceTurn];
 +        if (self.finish) {
 +          self.finish(NO, callErr.localizedDescription ?: @"LLM call failed");
 +      }
@@ -6409,11 +7146,22 @@ index ad2ff455..7f4e656b 100644
 +        @"c_total": tot[@"total_tokens"] ?: @0,
 +      })];
 +    }
++    NSString *traceResponseId = [resp[@"id"] isKindOfClass:NSString.class] ? (NSString *)resp[@"id"] : @"";
++    traceTurn[@"model_response"] = @{
++      @"content": assistantContent ?: @"",
++      @"reasoning": assistantReasoning ?: @"",
++      @"response_id": traceResponseId ?: @"",
++      @"usage_delta": deltaUsage ?: @{},
++      @"usage_cumulative": [self tokenUsageSnapshot] ?: @{},
++    };
 +    if (useResponses) {
 +      NSString *rid = [resp[@"id"] isKindOfClass:NSString.class] ? (NSString *)resp[@"id"] : @"";
 +      rid = OnDeviceAgentTrim(rid);
 +      if (rid.length == 0) {
 +        [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"responses_missing_id", nil, nil)];
++        traceTurn[@"terminal"] = @YES;
++        traceTurn[@"terminal_error"] = @{@"kind": @"responses_missing_id", @"message": @"Responses API returned no id"};
++        [self appendTraceTurn:traceTurn];
 +        if (self.finish) {
 +          self.finish(NO, @"Responses API returned no 'id' (cannot continue statefully).");
 +        }
@@ -6439,6 +7187,9 @@ index ad2ff455..7f4e656b 100644
 +    NSString *content = assistantContent;
 +    if (content.length == 0) {
 +      [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"empty_model_content", nil, nil)];
++      traceTurn[@"terminal"] = @YES;
++      traceTurn[@"terminal_error"] = @{@"kind": @"empty_model_content", @"message": @"Empty model content"};
++      [self appendTraceTurn:traceTurn];
 +      if (self.finish) {
 +        self.finish(NO, @"Empty model content");
 +      }
@@ -6450,6 +7201,8 @@ index ad2ff455..7f4e656b 100644
 +    NSDictionary *action = nil;
 +    NSError *parseErr = nil;
 +    NSInteger actionParseAttemptUsed = 0;
++    NSMutableArray *traceParseErrors = [NSMutableArray array];
++    NSMutableArray *traceRepairAttempts = [NSMutableArray array];
 +
 +    for (NSInteger attempt = 0; attempt <= maxActionRetries; attempt++) {
 +      parseErr = nil;
@@ -6460,6 +7213,11 @@ index ad2ff455..7f4e656b 100644
 +      }
 +
 +      NSString *errMsg = parseErr.localizedDescription ?: @"Unknown parse error";
++      [traceParseErrors addObject:@{
++        @"attempt": @(attempt),
++        @"error": errMsg ?: @"",
++        @"content_excerpt": OnDeviceAgentTruncate(OnDeviceAgentTrim(contentForParse), 1000) ?: @"",
++      }];
 +      [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"parse_action_failed", nil, @{
 +        @"attempt": @(attempt + 1),
 +        @"attempt_max": @(maxActionRetries + 1),
@@ -6520,6 +7278,11 @@ index ad2ff455..7f4e656b 100644
 +      if (fixResp == nil) {
 +        if (self.stopRequested) {
 +          [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
++          traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
++          traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
++          traceTurn[@"terminal"] = @YES;
++          traceTurn[@"terminal_error"] = @{@"kind": @"stop_requested", @"message": @"Stopped"};
++          [self appendTraceTurn:traceTurn];
 +          if (self.finish) {
 +            self.finish(NO, @"Stopped");
 +          }
@@ -6529,6 +7292,15 @@ index ad2ff455..7f4e656b 100644
 +          @"attempt": @(attempt + 1),
 +          @"error": fixCallErr.localizedDescription ?: fixCallErr ?: @"unknown",
 +        })];
++        traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
++        traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
++        traceTurn[@"terminal"] = @YES;
++        traceTurn[@"terminal_error"] = @{
++          @"kind": @"llm_fix_call_failed",
++          @"attempt": @(attempt + 1),
++          @"message": fixCallErr.localizedDescription ?: @"LLM fix call failed",
++        };
++        [self appendTraceTurn:traceTurn];
 +        if (self.finish) {
 +          self.finish(NO, fixCallErr.localizedDescription ?: @"LLM fix call failed");
 +        }
@@ -6538,6 +7310,17 @@ index ad2ff455..7f4e656b 100644
 +      NSString *fixContent = useResponses ? ([self contentFromResponsesResponse:fixResp] ?: @"") : ([self contentFromOpenAIResponse:fixResp] ?: @"");
 +      NSString *fixReasoning = useResponses ? [self reasoningFromResponsesResponse:fixResp] : [self reasoningFromOpenAIResponse:fixResp];
 +      NSDictionary *fixDeltaUsage = [self accumulateTokenUsageFromResponse:fixResp];
++      NSString *fixResponseIdForTrace = [fixResp[@"id"] isKindOfClass:NSString.class] ? (NSString *)fixResp[@"id"] : @"";
++      [traceRepairAttempts addObject:@{
++        @"attempt": @(attempt + 1),
++        @"request_text": fixText ?: @"",
++        @"response": @{
++          @"content": fixContent ?: @"",
++          @"reasoning": fixReasoning ?: @"",
++          @"response_id": fixResponseIdForTrace ?: @"",
++          @"usage_delta": fixDeltaUsage ?: @{},
++        },
++      }];
 +      if (fixDeltaUsage.count > 0) {
 +        NSDictionary *tot = [self tokenUsageSnapshot];
 +        [self emit:OnDeviceAgentLogJSONLine(@"info", @"tokens", @"token_usage", nil, @{
@@ -6557,6 +7340,11 @@ index ad2ff455..7f4e656b 100644
 +        rid = OnDeviceAgentTrim(rid);
 +        if (rid.length == 0) {
 +          [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"responses_missing_id_fix", nil, nil)];
++          traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
++          traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
++          traceTurn[@"terminal"] = @YES;
++          traceTurn[@"terminal_error"] = @{@"kind": @"responses_missing_id_fix", @"message": @"Responses API returned no id for fix call"};
++          [self appendTraceTurn:traceTurn];
 +          if (self.finish) {
 +            self.finish(NO, @"Responses API returned no 'id' for fix call (cannot continue statefully).");
 +          }
@@ -6590,6 +7378,11 @@ index ad2ff455..7f4e656b 100644
 +    if (action == nil) {
 +      NSString *stopMsg = [NSString stringWithFormat:@"模型输出的 action JSON 格式错误，已连续 %ld 次无法解析。为避免误操作，已停止任务。", (long)(maxActionRetries + 1)];
 +      [self emit:OnDeviceAgentLogJSONLine(@"error", @"agent", @"stop_parse_action_failed", stopMsg, @{@"attempt_max": @(maxActionRetries + 1)})];
++      traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
++      traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
++      traceTurn[@"terminal"] = @YES;
++      traceTurn[@"terminal_error"] = @{@"kind": @"parse_action_failed", @"message": stopMsg ?: @""};
++      [self appendTraceTurn:traceTurn];
 +      if (self.finish) {
 +        self.finish(NO, stopMsg);
 +      }
@@ -6623,6 +7416,13 @@ index ad2ff455..7f4e656b 100644
 +
 +    NSDictionary *actionObj = [action[@"action"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)action[@"action"] : nil;
 +    NSString *actionName = [actionObj[@"name"] isKindOfClass:NSString.class] ? OnDeviceAgentNormalizeActionName((NSString *)actionObj[@"name"]) : @"";
++    traceTurn[@"parse"] = @{
++      @"ok": @YES,
++      @"attempt_used": @(actionParseAttemptUsed),
++      @"errors": traceParseErrors.copy ?: @[],
++      @"action": action ?: @{},
++    };
++    traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
 +    [self emit:OnDeviceAgentLogJSONLine(@"info", @"action", @"step", nil, @{
 +      @"step": @(step),
 +      @"action": actionName ?: @"",
@@ -6633,6 +7433,14 @@ index ad2ff455..7f4e656b 100644
 +      NSDictionary *params = [actionObj[@"params"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)actionObj[@"params"] : @{};
 +      NSString *msg = OnDeviceAgentStringOrEmpty(params[@"message"]);
 +      [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"finished", nil, @{@"message": msg ?: @""})];
++      traceTurn[@"action_result"] = @{
++        @"ok": @YES,
++        @"terminal": @YES,
++        @"action": actionName ?: @"",
++        @"message": msg ?: @"",
++      };
++      traceTurn[@"terminal"] = @YES;
++      [self appendTraceTurn:traceTurn];
 +      if (self.finish) {
 +        self.finish(YES, msg.length > 0 ? msg : @"Finished");
 +      }
@@ -6640,12 +7448,26 @@ index ad2ff455..7f4e656b 100644
 +    }
 +
 +    NSError *actErr = nil;
-+    if (![self performAction:action error:&actErr]) {
++    NSDate *traceActionStartedAt = [NSDate date];
++    BOOL actionSucceeded = [self performAction:action error:&actErr];
++    NSTimeInterval traceActionMs = [[NSDate date] timeIntervalSinceDate:traceActionStartedAt] * 1000.0;
++    if (!actionSucceeded) {
 +      NSString *failMsg = actErr.localizedDescription ?: @"Action failed";
 +      NSString *kind = [actErr.userInfo[kOnDeviceAgentErrorKindKey] isKindOfClass:NSString.class] ? (NSString *)actErr.userInfo[kOnDeviceAgentErrorKindKey] : @"";
 +      BOOL recoverable = [kind isEqualToString:kOnDeviceAgentErrorKindLaunchNotInMap] || [kind isEqualToString:kOnDeviceAgentErrorKindInvalidParams];
 +      if (!recoverable) {
 +        [self emit:OnDeviceAgentLogJSONLine(@"error", @"action", @"action_failed", nil, @{@"error": failMsg ?: @"", @"kind": kind ?: @""})];
++        traceTurn[@"action_result"] = @{
++          @"ok": @NO,
++          @"recoverable": @NO,
++          @"action": actionName ?: @"",
++          @"error": failMsg ?: @"",
++          @"kind": kind ?: @"",
++          @"duration_ms": @((NSInteger)llround(traceActionMs)),
++        };
++        traceTurn[@"terminal"] = @YES;
++        traceTurn[@"terminal_error"] = @{@"kind": @"action_failed", @"message": failMsg ?: @""};
++        [self appendTraceTurn:traceTurn];
 +        if (self.finish) {
 +          self.finish(NO, failMsg);
 +        }
@@ -6673,11 +7495,36 @@ index ad2ff455..7f4e656b 100644
 +          @"count": @(consecutiveRecoverableFailures),
 +          @"limit": @(kOnDeviceAgentRecoverableFailureLimit),
 +        })];
++        traceTurn[@"action_result"] = @{
++          @"ok": @NO,
++          @"recoverable": @YES,
++          @"action": actionName ?: @"",
++          @"error": failMsg ?: @"",
++          @"kind": kind ?: @"",
++          @"explain": lastRecoverableFailureText ?: @"",
++          @"duration_ms": @((NSInteger)llround(traceActionMs)),
++        };
++        traceTurn[@"terminal"] = @YES;
++        traceTurn[@"terminal_error"] = @{@"kind": @"recoverable_failure_limit", @"message": stopMsg ?: @""};
++        [self appendTraceTurn:traceTurn];
 +        if (self.finish) {
 +          self.finish(NO, stopMsg);
 +        }
 +        return;
 +      }
++
++      traceTurn[@"action_result"] = @{
++        @"ok": @NO,
++        @"recoverable": @YES,
++        @"action": actionName ?: @"",
++        @"error": failMsg ?: @"",
++        @"kind": kind ?: @"",
++        @"explain": lastRecoverableFailureText ?: @"",
++        @"consecutive_recoverable_failures": @(consecutiveRecoverableFailures),
++        @"duration_ms": @((NSInteger)llround(traceActionMs)),
++      };
++      traceTurn[@"terminal"] = @NO;
++      [self appendTraceTurn:traceTurn];
 +
 +      if (stepDelay > 0) {
 +        [NSThread sleepForTimeInterval:stepDelay];
@@ -6702,6 +7549,19 @@ index ad2ff455..7f4e656b 100644
 +        @"new_done": @(newDoneCount),
 +      })];
 +    }
++
++    traceTurn[@"action_result"] = @{
++      @"ok": @YES,
++      @"recoverable": @NO,
++      @"action": actionName ?: @"",
++      @"duration_ms": @((NSInteger)llround(traceActionMs)),
++      @"plan_done_count_before": @(oldDoneCount),
++      @"plan_done_count_after": @(newDoneCount),
++      @"responses_chain_restart_scheduled": @(restartByPlanEnabled && planDoneCountIncreased),
++    };
++    traceTurn[@"working_note_after"] = self.workingNote ?: @"";
++    traceTurn[@"terminal"] = @NO;
++    [self appendTraceTurn:traceTurn];
 +
 +    if (stepDelay > 0) {
 +      [NSThread sleepForTimeInterval:stepDelay];
@@ -6746,6 +7606,7 @@ index ad2ff455..7f4e656b 100644
 +@property (nonatomic, copy) NSDictionary *tokenUsage;
 +@property (nonatomic, assign) NSInteger runTokenCounter;
 +@property (nonatomic, assign) NSInteger activeRunToken;
++@property (nonatomic, strong) OnDeviceAgentTraceRecorder *traceRecorder;
 +- (void)resetRuntime;
 +- (void)factoryReset;
 +@end
@@ -6838,6 +7699,7 @@ index ad2ff455..7f4e656b 100644
 +      return;
 +    }
 +    NSString *l = line ?: @"";
++    [self.traceRecorder appendLogLine:l];
 +    [self.logLines addObject:l];
 +    while (self.logLines.count > kOnDeviceAgentMaxLogLines) {
 +      [self.logLines removeObjectAtIndex:0];
@@ -6925,6 +7787,7 @@ index ad2ff455..7f4e656b 100644
 +    if (self.agent != nil) {
 +      [self.agent requestStop];
 +    }
++    [self.traceRecorder finishRunWithSuccess:NO message:@"Reset" stopReason:@"reset"];
 +    self.agent = nil;
 +    self.running = NO;
 +    self.lastMessage = @"";
@@ -6984,6 +7847,7 @@ index ad2ff455..7f4e656b 100644
 +    if (self.agent != nil) {
 +      [self.agent requestStop];
 +    }
++    [self.traceRecorder finishRunWithSuccess:NO message:@"Factory reset" stopReason:@"factory_reset"];
 +    self.agent = nil;
 +    self.running = NO;
 +    self.lastMessage = @"";
@@ -7325,6 +8189,7 @@ index ad2ff455..7f4e656b 100644
 +      tokens = [self.agent tokenUsageSnapshot] ?: @{};
 +      self.tokenUsage = tokens;
 +    }
++    NSDictionary *traceStatus = [self.traceRecorder statusSnapshot] ?: @{};
 +    st = @{
 +      @"running": @(self.running),
 +      @"last_message": self.lastMessage ?: @"",
@@ -7332,9 +8197,30 @@ index ad2ff455..7f4e656b 100644
 +      @"notes": notes,
 +      @"token_usage": tokens,
 +      @"log_lines": @(self.logLines.count),
++      @"trace": traceStatus,
 +    };
 +  });
 +  return st ?: @{};
++}
++
++- (NSArray<NSDictionary *> *)traces
++{
++  return [OnDeviceAgentTraceRecorder traceSummariesAtRootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
++}
++
++- (NSDictionary *)traceManifestForRunId:(NSString *)runId
++{
++  return [OnDeviceAgentTraceRecorder manifestForRunId:runId rootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
++}
++
++- (NSString *)traceTextFileForRunId:(NSString *)runId name:(NSString *)name
++{
++  return [OnDeviceAgentTraceRecorder textFileForRunId:runId name:name rootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
++}
++
++- (NSDictionary *)traceFileForRunId:(NSString *)runId path:(NSString *)path
++{
++  return [OnDeviceAgentTraceRecorder fileBase64ForRunId:runId relativePath:path rootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
 +}
 +
 +- (NSArray<NSString *> *)logs
@@ -7437,6 +8323,8 @@ index ad2ff455..7f4e656b 100644
 +    [self.chatItems removeAllObjects];
 +    [self.stepScreenshots removeAllObjects];
 +    [self.stepScreenshotOrder removeAllObjects];
++    self.traceRecorder = [[OnDeviceAgentTraceRecorder alloc] initWithRootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
++    OnDeviceAgentTraceRecorder *runTraceRecorder = self.traceRecorder;
 +
 +    __weak __typeof(self) weakSelf = self;
 +    OnDeviceAgentLogBlock log = ^(NSString *line) {
@@ -7466,6 +8354,13 @@ index ad2ff455..7f4e656b 100644
 +	        return;
 +	      }
 +	      NSString *finalMessage = message ?: (success ? @"Finished" : @"Stopped");
++        NSString *stopReason = success ? @"finish_action" : @"stopped_or_failed";
++        if (!success && [finalMessage isEqualToString:@"Max steps reached"]) {
++          stopReason = @"max_steps";
++        } else if (!success && [finalMessage isEqualToString:@"Stopped"]) {
++          stopReason = @"stop_requested";
++        }
++        [runTraceRecorder finishRunWithSuccess:success message:finalMessage stopReason:stopReason];
 +	      [strongSelf appendLog:OnDeviceAgentLogJSONLine(success ? @"info" : @"error", @"runner", @"run_finished", finalMessage, @{@"success": @(success)}) token:token];
 +	      dispatch_async(strongSelf.stateQueue, ^{
 +	        if (token != strongSelf.activeRunToken) {
@@ -7485,7 +8380,7 @@ index ad2ff455..7f4e656b 100644
 +      });
 +	    };
 +
-+	    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot finish:finish];
++	    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot traceRecorder:runTraceRecorder finish:finish];
 +	    [self appendLog:OnDeviceAgentLogJSONLine(@"info", @"runner", @"run_started", nil, nil) token:token];
 +	    [self.agent start];
 +	  });
@@ -7529,7 +8424,7 @@ index ad2ff455..7f4e656b 100644
  @interface UITestingUITests : FBFailureProofTestCase <FBWebServerDelegate>
  @end
  
-@@ -35,6 +2931,8 @@ + (void)setUp
+@@ -35,6 +3155,8 @@
    } else {
      [FBConfiguration disableScreenshots];
    }

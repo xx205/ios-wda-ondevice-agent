@@ -29,6 +29,10 @@
 - `GET /agent/status`：当前运行状态（JSON）
 - `GET /agent/logs`：最近日志（JSON）
 - `GET /agent/chat`：对话历史（JSON）
+- `GET /agent/traces`：已记录的 canonical trace 列表（JSON）
+- `GET /agent/trace/manifest`：指定 trace 的 manifest（JSON）
+- `GET /agent/trace/turns`：指定 trace 的逐步 turn JSONL
+- `GET /agent/trace/file`：指定 trace 内的截图等文件（base64 JSON）
 - `POST /agent/config`：保存配置（JSON body）
 - `POST /agent/start`：保存配置并启动（JSON body）
 - `POST /agent/stop`：停止（无需 body）
@@ -132,17 +136,82 @@ bash scripts/install_wda_prepared_runner.sh --device <UDID>
 
 参考：`docs/recipes/ondevice_agent_console_app.md`
 
-### 8)（开发者可选）本地调试工具
+### 8) 导出训练轨迹、HTML viewer 和 review 视频
+
+Runner 运行结束后，可以把 on-device agent 的 canonical trace 导出成训练数据目录：
+
+```bash
+python3 tools/wda_training_export.py \
+  --base-url http://127.0.0.1:8100 \
+  --out-dir training_dataset \
+  --source auto \
+  --include-parsed-json \
+  --include-repair-samples
+```
+
+输出目录会包含：
+
+- `trace.json`：canonical trace，保留 run manifest、system prompt、每一步状态、模型响应、解析结果、动作结果和截图引用
+- `dataset.jsonl`：状态/截图/action 训练样本
+- `messages.jsonl`：chat SFT 格式样本
+- `repair_samples.jsonl`：可选的 action 修复样本
+- `images/`：逐步截图
+- `run_meta.json`：导出元数据和计数
+
+如果通过局域网访问 iPhone，并且已配置 Agent Token：
+
+```bash
+export WDA_AGENT_TOKEN="<your-token>"
+python3 tools/wda_training_export.py --base-url http://<iphone-ip>:8100 --out-dir training_dataset
+```
+
+如果你的终端设置了代理环境变量，导出到 `127.0.0.1` 或 iPhone 局域网 IP 时建议绕过代理：
+
+```bash
+export NO_PROXY="127.0.0.1,localhost,<iphone-ip>"
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+```
+
+PowerShell：
+
+```powershell
+$env:NO_PROXY = "127.0.0.1,localhost,<iphone-ip>"
+Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY,Env:http_proxy,Env:https_proxy,Env:all_proxy -ErrorAction SilentlyContinue
+```
+
+生成静态 HTML viewer：
+
+```bash
+python3 tools/wda_training_viewer.py --dataset-dir training_dataset
+```
+
+如果本机有 `ffmpeg`，可以生成 review 视频：
+
+```bash
+python3 tools/wda_training_video.py --dataset-dir training_dataset --out training_dataset/trace_review.mp4
+```
+
+只导出一个轻量 HTML 报告时，可以使用：
+
+```bash
+python3 tools/wda_rich_export.py --base-url http://127.0.0.1:8100 --html agent_report.html
+```
+
+### 9)（开发者可选）本地调试工具
 
 仓库提供一组本地调试脚本（用于研发/回归，不是终端用户必需）：
 
 - `tools/wda_remote_tool.py`：控制 `/agent/*`、导出 chat/log、生成 HTML 报告
+- `tools/wda_rich_export.py`：导出带配置、日志、token usage 和动作标注的 HTML 报告
+- `tools/wda_training_export.py`：导出 canonical trace、训练 JSONL 和截图
+- `tools/wda_training_viewer.py`：为训练数据目录生成静态 HTML viewer
+- `tools/wda_training_video.py`：把训练数据目录渲染成 review MP4
 - `tools/wda_longshot.py`：通过 WDA 采集并拼接长截图
 - `tools/macos_remote_tool.py`：在 macOS 本机做 app 打开/激活、点击/滑动、截图
 
 说明见：`tools/README.md`
 
-### 9) 豆包（火山方舟）接入与缓存说明
+### 10) 豆包（火山方舟）接入与缓存说明
 
 豆包模型（火山方舟 Ark）接入步骤、API Key 获取、Responses 缓存开通与配置已整理为独立文档：
 

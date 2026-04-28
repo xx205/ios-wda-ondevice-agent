@@ -20,10 +20,20 @@ fail() {
   exit 1
 }
 
+has_pattern() {
+  local pattern="$1"
+  local file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -n --hidden --no-ignore-vcs -- "$pattern" "$file" >/dev/null 2>&1
+    return $?
+  fi
+  grep -R -n -E -- "$pattern" "$file" >/dev/null 2>&1
+}
+
 must_have() {
   local pattern="$1"
   local file="$2"
-  if ! rg -n --hidden --no-ignore-vcs -- "$pattern" "$file" >/dev/null 2>&1; then
+  if ! has_pattern "$pattern" "$file"; then
     fail "missing pattern '$pattern' in $file"
   fi
 }
@@ -31,7 +41,7 @@ must_have() {
 must_not_have() {
   local pattern="$1"
   local file="$2"
-  if rg -n --hidden --no-ignore-vcs -- "$pattern" "$file" >/dev/null 2>&1; then
+  if has_pattern "$pattern" "$file"; then
     fail "forbidden pattern '$pattern' found in $file"
   fi
 }
