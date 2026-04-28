@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-and-static-checks:
+    name: Python and static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Python syntax check
+        run: |
+          python -m py_compile \
+            scripts/test_plan_merge_regressions.py \
+            tools/wda_remote_tool.py \
+            tools/wda_rich_export.py \
+            tools/wda_training_export.py \
+            tools/wda_training_viewer.py \
+            tools/wda_training_video.py
+
+      - name: Plan merge regression checks
+        run: python scripts/test_plan_merge_regressions.py
+
+      - name: No-secrets regression checks
+        run: bash scripts/check_no_secrets_regressions.sh
+
+      - name: WDA patch and overlay sync
+        run: bash scripts/check_wda_patch_sync.sh
+
+  macos-xcode-build:
+    name: macOS Xcode build
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List Console app project
+        run: xcodebuild -list -project apps/OnDeviceAgentConsole/OnDeviceAgentConsole.xcodeproj
+
+      - name: Build Console app for simulator
+        run: |
+          xcodebuild \
+            -project apps/OnDeviceAgentConsole/OnDeviceAgentConsole.xcodeproj \
+            -scheme OnDeviceAgentConsole \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing

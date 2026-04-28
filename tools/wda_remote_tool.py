@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_BASE_URL = os.environ.get("WDA_URL", "http://127.0.0.1:8100")
+AGENT_TOKEN = os.environ.get("WDA_AGENT_TOKEN", "")
 
 
 class ApiError(RuntimeError):
@@ -66,6 +67,8 @@ def http_request_json(
     timeout: float = 20.0,
 ) -> Any:
     headers = {"Accept": "application/json"}
+    if AGENT_TOKEN:
+        headers["X-OnDevice-Agent-Token"] = AGENT_TOKEN
     data = None
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -829,6 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local helper to control /agent endpoints and export chat with screenshots.",
     )
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help=f"WDA base URL (default: {DEFAULT_BASE_URL})")
+    p.add_argument("--agent-token", default=AGENT_TOKEN, help="Agent token for LAN access (or WDA_AGENT_TOKEN)")
     p.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds")
 
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -902,6 +906,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: List[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    global AGENT_TOKEN
+    AGENT_TOKEN = (args.agent_token or "").strip()
     try:
         return int(args.func(args))  # type: ignore[arg-type]
     except KeyboardInterrupt:

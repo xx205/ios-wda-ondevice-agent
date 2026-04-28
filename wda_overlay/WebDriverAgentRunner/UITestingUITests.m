@@ -87,6 +87,10 @@ static NSUInteger const kOnDeviceAgentChatCompletionsMaxNonSystemMessages = 24; 
 - (NSDictionary *)statusWithDefaultSystemPrompt:(BOOL)includeDefaultSystemPrompt;
 - (NSArray<NSString *> *)logs;
 - (NSArray<NSDictionary *> *)chat;
+- (NSArray<NSDictionary *> *)traces;
+- (NSDictionary *)traceManifestForRunId:(NSString *)runId;
+- (NSString *)traceTextFileForRunId:(NSString *)runId name:(NSString *)name;
+- (NSDictionary *)traceFileForRunId:(NSString *)runId path:(NSString *)path;
 @end
 
 // Forward declarations for symbols implemented in OnDeviceAgentExports.m / OnDeviceAgentRoutes.m
@@ -1423,6 +1427,8 @@ typedef void (^OnDeviceAgentChatBlock)(NSDictionary *item);
 typedef void (^OnDeviceAgentFinishBlock)(BOOL success, NSString *message);
 typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 
+#import "OnDeviceAgentTraceRecorder.m"
+
 @interface OnDeviceAgent : NSObject <NSURLSessionDelegate>
 @property (atomic, assign) BOOL stopRequested;
 @property (nonatomic, copy) NSDictionary *config;
@@ -1430,6 +1436,7 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 @property (nonatomic, copy) OnDeviceAgentChatBlock chat;
 @property (nonatomic, copy) OnDeviceAgentFinishBlock finish;
 @property (nonatomic, copy) OnDeviceAgentScreenshotBlock screenshot;
+@property (nonatomic, strong) OnDeviceAgentTraceRecorder *traceRecorder;
 @property (nonatomic, strong) NSURLSession *session;
 @property (atomic, strong) NSURLSessionTask *inflightTask;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *context;
@@ -1453,7 +1460,7 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 
 @implementation OnDeviceAgent
 
-- (instancetype)initWithConfig:(NSDictionary *)config log:(OnDeviceAgentLogBlock)log chat:(OnDeviceAgentChatBlock)chat screenshot:(OnDeviceAgentScreenshotBlock)screenshot finish:(OnDeviceAgentFinishBlock)finish
+- (instancetype)initWithConfig:(NSDictionary *)config log:(OnDeviceAgentLogBlock)log chat:(OnDeviceAgentChatBlock)chat screenshot:(OnDeviceAgentScreenshotBlock)screenshot traceRecorder:(OnDeviceAgentTraceRecorder *)traceRecorder finish:(OnDeviceAgentFinishBlock)finish
 {
   self = [super init];
   if (!self) {
@@ -1463,6 +1470,7 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
   _log = [log copy];
   _chat = [chat copy];
   _screenshot = [screenshot copy];
+  _traceRecorder = traceRecorder;
   _finish = [finish copy];
   _stopRequested = NO;
   _planChecklist = @[];
@@ -1499,6 +1507,15 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
   if (self.chat) {
     self.chat(item ?: @{} );
   }
+}
+
+- (void)appendTraceTurn:(NSMutableDictionary *)turn
+{
+  if (![turn isKindOfClass:NSMutableDictionary.class]) {
+    return;
+  }
+  turn[@"ts_end"] = OnDeviceAgentNowString();
+  [self.traceRecorder appendTurn:turn.copy];
 }
 
 - (NSString *)buildSystemPrompt
@@ -1644,6 +1661,10 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
     if (!useResponses) {
       [self.context addObject:@{@"role": @"system", @"content": renderedSystemPrompt}];
     }
+  [self.traceRecorder startRunWithConfig:self.config
+                                    task:task
+                    renderedSystemPrompt:renderedSystemPrompt
+                          defaultTemplate:systemTemplate];
   BOOL captureRawConversation = OnDeviceAgentParseBool(self.config[kOnDeviceAgentDebugLogRawAssistantKey], NO);
 
   for (NSInteger step = 0; step < maxSteps; step++) {
@@ -1724,6 +1745,26 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
       }
       }
 
+        NSDictionary *traceImage = [self.traceRecorder saveImagePNG:png step:step stage:@"model"] ?: @{};
+        NSMutableDictionary *traceTurn = [NSMutableDictionary dictionary];
+        traceTurn[@"schema"] = @"wda.training_turn.v1";
+        traceTurn[@"step"] = @(step);
+        traceTurn[@"ts_start"] = OnDeviceAgentNowString();
+        traceTurn[@"state"] = @{
+          @"user_text": textContent ?: @"",
+          @"screen_info_text": screenInfo ?: @"{}",
+          @"image": traceImage,
+          @"working_note_before": self.workingNote ?: @"",
+          @"previous_recoverable_failure": lastRecoverableFailureText ?: @"",
+          @"restarted_responses_chain": @(restartedThisStep),
+        };
+        traceTurn[@"model_request"] = @{
+          @"api_mode": apiMode ?: @"",
+          @"model": OnDeviceAgentStringOrEmpty(self.config[kOnDeviceAgentModelKey]),
+          @"previous_response_id": self.previousResponseId ?: @"",
+          @"capture_raw_conversation": @(captureRawConversation),
+        };
+
         NSDictionary *chatUserMessage = @{
           @"role": @"user",
           @"content": @[
@@ -1780,12 +1821,21 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
       if (resp == nil) {
         if (self.stopRequested) {
           [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
+          traceTurn[@"terminal"] = @YES;
+          traceTurn[@"terminal_error"] = @{@"kind": @"stop_requested", @"message": @"Stopped"};
+          [self appendTraceTurn:traceTurn];
           if (self.finish) {
             self.finish(NO, @"Stopped");
           }
           return;
         }
         [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"llm_call_failed", nil, @{@"error": callErr.localizedDescription ?: callErr ?: @"unknown"})];
+        traceTurn[@"terminal"] = @YES;
+        traceTurn[@"terminal_error"] = @{
+          @"kind": @"llm_call_failed",
+          @"message": callErr.localizedDescription ?: @"LLM call failed",
+        };
+        [self appendTraceTurn:traceTurn];
         if (self.finish) {
           self.finish(NO, callErr.localizedDescription ?: @"LLM call failed");
       }
@@ -1809,11 +1859,22 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
         @"c_total": tot[@"total_tokens"] ?: @0,
       })];
     }
+    NSString *traceResponseId = [resp[@"id"] isKindOfClass:NSString.class] ? (NSString *)resp[@"id"] : @"";
+    traceTurn[@"model_response"] = @{
+      @"content": assistantContent ?: @"",
+      @"reasoning": assistantReasoning ?: @"",
+      @"response_id": traceResponseId ?: @"",
+      @"usage_delta": deltaUsage ?: @{},
+      @"usage_cumulative": [self tokenUsageSnapshot] ?: @{},
+    };
     if (useResponses) {
       NSString *rid = [resp[@"id"] isKindOfClass:NSString.class] ? (NSString *)resp[@"id"] : @"";
       rid = OnDeviceAgentTrim(rid);
       if (rid.length == 0) {
         [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"responses_missing_id", nil, nil)];
+        traceTurn[@"terminal"] = @YES;
+        traceTurn[@"terminal_error"] = @{@"kind": @"responses_missing_id", @"message": @"Responses API returned no id"};
+        [self appendTraceTurn:traceTurn];
         if (self.finish) {
           self.finish(NO, @"Responses API returned no 'id' (cannot continue statefully).");
         }
@@ -1839,6 +1900,9 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
     NSString *content = assistantContent;
     if (content.length == 0) {
       [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"empty_model_content", nil, nil)];
+      traceTurn[@"terminal"] = @YES;
+      traceTurn[@"terminal_error"] = @{@"kind": @"empty_model_content", @"message": @"Empty model content"};
+      [self appendTraceTurn:traceTurn];
       if (self.finish) {
         self.finish(NO, @"Empty model content");
       }
@@ -1850,6 +1914,8 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
     NSDictionary *action = nil;
     NSError *parseErr = nil;
     NSInteger actionParseAttemptUsed = 0;
+    NSMutableArray *traceParseErrors = [NSMutableArray array];
+    NSMutableArray *traceRepairAttempts = [NSMutableArray array];
 
     for (NSInteger attempt = 0; attempt <= maxActionRetries; attempt++) {
       parseErr = nil;
@@ -1860,6 +1926,11 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
       }
 
       NSString *errMsg = parseErr.localizedDescription ?: @"Unknown parse error";
+      [traceParseErrors addObject:@{
+        @"attempt": @(attempt),
+        @"error": errMsg ?: @"",
+        @"content_excerpt": OnDeviceAgentTruncate(OnDeviceAgentTrim(contentForParse), 1000) ?: @"",
+      }];
       [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"parse_action_failed", nil, @{
         @"attempt": @(attempt + 1),
         @"attempt_max": @(maxActionRetries + 1),
@@ -1920,6 +1991,11 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
       if (fixResp == nil) {
         if (self.stopRequested) {
           [self emit:OnDeviceAgentLogJSONLine(@"warn", @"agent", @"stop_requested", nil, nil)];
+          traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
+          traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
+          traceTurn[@"terminal"] = @YES;
+          traceTurn[@"terminal_error"] = @{@"kind": @"stop_requested", @"message": @"Stopped"};
+          [self appendTraceTurn:traceTurn];
           if (self.finish) {
             self.finish(NO, @"Stopped");
           }
@@ -1929,6 +2005,15 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
           @"attempt": @(attempt + 1),
           @"error": fixCallErr.localizedDescription ?: fixCallErr ?: @"unknown",
         })];
+        traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
+        traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
+        traceTurn[@"terminal"] = @YES;
+        traceTurn[@"terminal_error"] = @{
+          @"kind": @"llm_fix_call_failed",
+          @"attempt": @(attempt + 1),
+          @"message": fixCallErr.localizedDescription ?: @"LLM fix call failed",
+        };
+        [self appendTraceTurn:traceTurn];
         if (self.finish) {
           self.finish(NO, fixCallErr.localizedDescription ?: @"LLM fix call failed");
         }
@@ -1938,6 +2023,17 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
       NSString *fixContent = useResponses ? ([self contentFromResponsesResponse:fixResp] ?: @"") : ([self contentFromOpenAIResponse:fixResp] ?: @"");
       NSString *fixReasoning = useResponses ? [self reasoningFromResponsesResponse:fixResp] : [self reasoningFromOpenAIResponse:fixResp];
       NSDictionary *fixDeltaUsage = [self accumulateTokenUsageFromResponse:fixResp];
+      NSString *fixResponseIdForTrace = [fixResp[@"id"] isKindOfClass:NSString.class] ? (NSString *)fixResp[@"id"] : @"";
+      [traceRepairAttempts addObject:@{
+        @"attempt": @(attempt + 1),
+        @"request_text": fixText ?: @"",
+        @"response": @{
+          @"content": fixContent ?: @"",
+          @"reasoning": fixReasoning ?: @"",
+          @"response_id": fixResponseIdForTrace ?: @"",
+          @"usage_delta": fixDeltaUsage ?: @{},
+        },
+      }];
       if (fixDeltaUsage.count > 0) {
         NSDictionary *tot = [self tokenUsageSnapshot];
         [self emit:OnDeviceAgentLogJSONLine(@"info", @"tokens", @"token_usage", nil, @{
@@ -1957,6 +2053,11 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
         rid = OnDeviceAgentTrim(rid);
         if (rid.length == 0) {
           [self emit:OnDeviceAgentLogJSONLine(@"error", @"model", @"responses_missing_id_fix", nil, nil)];
+          traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
+          traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
+          traceTurn[@"terminal"] = @YES;
+          traceTurn[@"terminal_error"] = @{@"kind": @"responses_missing_id_fix", @"message": @"Responses API returned no id for fix call"};
+          [self appendTraceTurn:traceTurn];
           if (self.finish) {
             self.finish(NO, @"Responses API returned no 'id' for fix call (cannot continue statefully).");
           }
@@ -1990,6 +2091,11 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
     if (action == nil) {
       NSString *stopMsg = [NSString stringWithFormat:@"模型输出的 action JSON 格式错误，已连续 %ld 次无法解析。为避免误操作，已停止任务。", (long)(maxActionRetries + 1)];
       [self emit:OnDeviceAgentLogJSONLine(@"error", @"agent", @"stop_parse_action_failed", stopMsg, @{@"attempt_max": @(maxActionRetries + 1)})];
+      traceTurn[@"parse"] = @{@"ok": @NO, @"errors": traceParseErrors.copy ?: @[]};
+      traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
+      traceTurn[@"terminal"] = @YES;
+      traceTurn[@"terminal_error"] = @{@"kind": @"parse_action_failed", @"message": stopMsg ?: @""};
+      [self appendTraceTurn:traceTurn];
       if (self.finish) {
         self.finish(NO, stopMsg);
       }
@@ -2023,6 +2129,13 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 
     NSDictionary *actionObj = [action[@"action"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)action[@"action"] : nil;
     NSString *actionName = [actionObj[@"name"] isKindOfClass:NSString.class] ? OnDeviceAgentNormalizeActionName((NSString *)actionObj[@"name"]) : @"";
+    traceTurn[@"parse"] = @{
+      @"ok": @YES,
+      @"attempt_used": @(actionParseAttemptUsed),
+      @"errors": traceParseErrors.copy ?: @[],
+      @"action": action ?: @{},
+    };
+    traceTurn[@"repair_attempts"] = traceRepairAttempts.copy ?: @[];
     [self emit:OnDeviceAgentLogJSONLine(@"info", @"action", @"step", nil, @{
       @"step": @(step),
       @"action": actionName ?: @"",
@@ -2033,6 +2146,14 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
       NSDictionary *params = [actionObj[@"params"] isKindOfClass:NSDictionary.class] ? (NSDictionary *)actionObj[@"params"] : @{};
       NSString *msg = OnDeviceAgentStringOrEmpty(params[@"message"]);
       [self emit:OnDeviceAgentLogJSONLine(@"info", @"agent", @"finished", nil, @{@"message": msg ?: @""})];
+      traceTurn[@"action_result"] = @{
+        @"ok": @YES,
+        @"terminal": @YES,
+        @"action": actionName ?: @"",
+        @"message": msg ?: @"",
+      };
+      traceTurn[@"terminal"] = @YES;
+      [self appendTraceTurn:traceTurn];
       if (self.finish) {
         self.finish(YES, msg.length > 0 ? msg : @"Finished");
       }
@@ -2040,12 +2161,26 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
     }
 
     NSError *actErr = nil;
-    if (![self performAction:action error:&actErr]) {
+    NSDate *traceActionStartedAt = [NSDate date];
+    BOOL actionSucceeded = [self performAction:action error:&actErr];
+    NSTimeInterval traceActionMs = [[NSDate date] timeIntervalSinceDate:traceActionStartedAt] * 1000.0;
+    if (!actionSucceeded) {
       NSString *failMsg = actErr.localizedDescription ?: @"Action failed";
       NSString *kind = [actErr.userInfo[kOnDeviceAgentErrorKindKey] isKindOfClass:NSString.class] ? (NSString *)actErr.userInfo[kOnDeviceAgentErrorKindKey] : @"";
       BOOL recoverable = [kind isEqualToString:kOnDeviceAgentErrorKindLaunchNotInMap] || [kind isEqualToString:kOnDeviceAgentErrorKindInvalidParams];
       if (!recoverable) {
         [self emit:OnDeviceAgentLogJSONLine(@"error", @"action", @"action_failed", nil, @{@"error": failMsg ?: @"", @"kind": kind ?: @""})];
+        traceTurn[@"action_result"] = @{
+          @"ok": @NO,
+          @"recoverable": @NO,
+          @"action": actionName ?: @"",
+          @"error": failMsg ?: @"",
+          @"kind": kind ?: @"",
+          @"duration_ms": @((NSInteger)llround(traceActionMs)),
+        };
+        traceTurn[@"terminal"] = @YES;
+        traceTurn[@"terminal_error"] = @{@"kind": @"action_failed", @"message": failMsg ?: @""};
+        [self appendTraceTurn:traceTurn];
         if (self.finish) {
           self.finish(NO, failMsg);
         }
@@ -2073,11 +2208,36 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
           @"count": @(consecutiveRecoverableFailures),
           @"limit": @(kOnDeviceAgentRecoverableFailureLimit),
         })];
+        traceTurn[@"action_result"] = @{
+          @"ok": @NO,
+          @"recoverable": @YES,
+          @"action": actionName ?: @"",
+          @"error": failMsg ?: @"",
+          @"kind": kind ?: @"",
+          @"explain": lastRecoverableFailureText ?: @"",
+          @"duration_ms": @((NSInteger)llround(traceActionMs)),
+        };
+        traceTurn[@"terminal"] = @YES;
+        traceTurn[@"terminal_error"] = @{@"kind": @"recoverable_failure_limit", @"message": stopMsg ?: @""};
+        [self appendTraceTurn:traceTurn];
         if (self.finish) {
           self.finish(NO, stopMsg);
         }
         return;
       }
+
+      traceTurn[@"action_result"] = @{
+        @"ok": @NO,
+        @"recoverable": @YES,
+        @"action": actionName ?: @"",
+        @"error": failMsg ?: @"",
+        @"kind": kind ?: @"",
+        @"explain": lastRecoverableFailureText ?: @"",
+        @"consecutive_recoverable_failures": @(consecutiveRecoverableFailures),
+        @"duration_ms": @((NSInteger)llround(traceActionMs)),
+      };
+      traceTurn[@"terminal"] = @NO;
+      [self appendTraceTurn:traceTurn];
 
       if (stepDelay > 0) {
         [NSThread sleepForTimeInterval:stepDelay];
@@ -2102,6 +2262,19 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
         @"new_done": @(newDoneCount),
       })];
     }
+
+    traceTurn[@"action_result"] = @{
+      @"ok": @YES,
+      @"recoverable": @NO,
+      @"action": actionName ?: @"",
+      @"duration_ms": @((NSInteger)llround(traceActionMs)),
+      @"plan_done_count_before": @(oldDoneCount),
+      @"plan_done_count_after": @(newDoneCount),
+      @"responses_chain_restart_scheduled": @(restartByPlanEnabled && planDoneCountIncreased),
+    };
+    traceTurn[@"working_note_after"] = self.workingNote ?: @"";
+    traceTurn[@"terminal"] = @NO;
+    [self appendTraceTurn:traceTurn];
 
     if (stepDelay > 0) {
       [NSThread sleepForTimeInterval:stepDelay];
@@ -2146,6 +2319,7 @@ typedef void (^OnDeviceAgentScreenshotBlock)(NSInteger step, NSData *png);
 @property (nonatomic, copy) NSDictionary *tokenUsage;
 @property (nonatomic, assign) NSInteger runTokenCounter;
 @property (nonatomic, assign) NSInteger activeRunToken;
+@property (nonatomic, strong) OnDeviceAgentTraceRecorder *traceRecorder;
 - (void)resetRuntime;
 - (void)factoryReset;
 @end
@@ -2238,6 +2412,7 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
       return;
     }
     NSString *l = line ?: @"";
+    [self.traceRecorder appendLogLine:l];
     [self.logLines addObject:l];
     while (self.logLines.count > kOnDeviceAgentMaxLogLines) {
       [self.logLines removeObjectAtIndex:0];
@@ -2325,6 +2500,7 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
     if (self.agent != nil) {
       [self.agent requestStop];
     }
+    [self.traceRecorder finishRunWithSuccess:NO message:@"Reset" stopReason:@"reset"];
     self.agent = nil;
     self.running = NO;
     self.lastMessage = @"";
@@ -2384,6 +2560,7 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
     if (self.agent != nil) {
       [self.agent requestStop];
     }
+    [self.traceRecorder finishRunWithSuccess:NO message:@"Factory reset" stopReason:@"factory_reset"];
     self.agent = nil;
     self.running = NO;
     self.lastMessage = @"";
@@ -2725,6 +2902,7 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
       tokens = [self.agent tokenUsageSnapshot] ?: @{};
       self.tokenUsage = tokens;
     }
+    NSDictionary *traceStatus = [self.traceRecorder statusSnapshot] ?: @{};
     st = @{
       @"running": @(self.running),
       @"last_message": self.lastMessage ?: @"",
@@ -2732,9 +2910,30 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
       @"notes": notes,
       @"token_usage": tokens,
       @"log_lines": @(self.logLines.count),
+      @"trace": traceStatus,
     };
   });
   return st ?: @{};
+}
+
+- (NSArray<NSDictionary *> *)traces
+{
+  return [OnDeviceAgentTraceRecorder traceSummariesAtRootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
+}
+
+- (NSDictionary *)traceManifestForRunId:(NSString *)runId
+{
+  return [OnDeviceAgentTraceRecorder manifestForRunId:runId rootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
+}
+
+- (NSString *)traceTextFileForRunId:(NSString *)runId name:(NSString *)name
+{
+  return [OnDeviceAgentTraceRecorder textFileForRunId:runId name:name rootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
+}
+
+- (NSDictionary *)traceFileForRunId:(NSString *)runId path:(NSString *)path
+{
+  return [OnDeviceAgentTraceRecorder fileBase64ForRunId:runId relativePath:path rootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
 }
 
 - (NSArray<NSString *> *)logs
@@ -2837,6 +3036,8 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
     [self.chatItems removeAllObjects];
     [self.stepScreenshots removeAllObjects];
     [self.stepScreenshotOrder removeAllObjects];
+    self.traceRecorder = [[OnDeviceAgentTraceRecorder alloc] initWithRootDirectory:[OnDeviceAgentTraceRecorder defaultRootDirectory]];
+    OnDeviceAgentTraceRecorder *runTraceRecorder = self.traceRecorder;
 
     __weak __typeof(self) weakSelf = self;
     OnDeviceAgentLogBlock log = ^(NSString *line) {
@@ -2866,6 +3067,13 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
 	        return;
 	      }
 	      NSString *finalMessage = message ?: (success ? @"Finished" : @"Stopped");
+        NSString *stopReason = success ? @"finish_action" : @"stopped_or_failed";
+        if (!success && [finalMessage isEqualToString:@"Max steps reached"]) {
+          stopReason = @"max_steps";
+        } else if (!success && [finalMessage isEqualToString:@"Stopped"]) {
+          stopReason = @"stop_requested";
+        }
+        [runTraceRecorder finishRunWithSuccess:success message:finalMessage stopReason:stopReason];
 	      [strongSelf appendLog:OnDeviceAgentLogJSONLine(success ? @"info" : @"error", @"runner", @"run_finished", finalMessage, @{@"success": @(success)}) token:token];
 	      dispatch_async(strongSelf.stateQueue, ^{
 	        if (token != strongSelf.activeRunToken) {
@@ -2885,7 +3093,7 @@ static BOOL OnDeviceAgentParseStepActionFromLogLine(NSString *line, NSInteger *o
       });
 	    };
 
-	    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot finish:finish];
+	    self.agent = [[OnDeviceAgent alloc] initWithConfig:self.config log:log chat:chat screenshot:screenshot traceRecorder:runTraceRecorder finish:finish];
 	    [self appendLog:OnDeviceAgentLogJSONLine(@"info", @"runner", @"run_started", nil, nil) token:token];
 	    [self.agent start];
 	  });

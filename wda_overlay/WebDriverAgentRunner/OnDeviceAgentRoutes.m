@@ -389,6 +389,10 @@ static id<FBResponsePayload> OnDeviceAgentBadRequestPayload(NSString *message)
     [[FBRoute GET:@"/agent/status"].withoutSession respondWithTarget:self action:@selector(handleGetStatus:)],
     [[FBRoute GET:@"/agent/logs"].withoutSession respondWithTarget:self action:@selector(handleGetLogs:)],
     [[FBRoute GET:@"/agent/chat"].withoutSession respondWithTarget:self action:@selector(handleGetChat:)],
+    [[FBRoute GET:@"/agent/traces"].withoutSession respondWithTarget:self action:@selector(handleGetTraces:)],
+    [[FBRoute GET:@"/agent/trace/manifest"].withoutSession respondWithTarget:self action:@selector(handleGetTraceManifest:)],
+    [[FBRoute GET:@"/agent/trace/turns"].withoutSession respondWithTarget:self action:@selector(handleGetTraceTurns:)],
+    [[FBRoute GET:@"/agent/trace/file"].withoutSession respondWithTarget:self action:@selector(handleGetTraceFile:)],
     [[FBRoute GET:@"/agent/events"].withoutSession respondWithTarget:self action:@selector(handleGetEvents:)],
     [[FBRoute GET:@"/agent/step_screenshot"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshot:)],
     [[FBRoute GET:@"/agent/step_screenshots"].withoutSession respondWithTarget:self action:@selector(handleGetStepScreenshots:)],
@@ -483,6 +487,63 @@ static id<FBResponsePayload> OnDeviceAgentBadRequestPayload(NSString *message)
     return OnDeviceAgentUnauthorizedPayload(authError);
   }
   return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] chat]});
+}
+
++ (id<FBResponsePayload>)handleGetTraces:(FBRouteRequest *)request
+{
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  return FBResponseWithObject(@{@"items": [[OnDeviceAgentManager shared] traces]});
+}
+
++ (id<FBResponsePayload>)handleGetTraceManifest:(FBRouteRequest *)request
+{
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  NSString *runId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"run_id"]));
+  if (runId.length == 0) {
+    return OnDeviceAgentBadRequestPayload(@"Missing query parameter: run_id");
+  }
+  NSDictionary *manifest = [[OnDeviceAgentManager shared] traceManifestForRunId:runId];
+  if (manifest.count == 0) {
+    return FBResponseWithObject(@{@"ok": @NO, @"error": @"Trace manifest not found"});
+  }
+  return FBResponseWithObject(@{@"ok": @YES, @"manifest": manifest});
+}
+
++ (id<FBResponsePayload>)handleGetTraceTurns:(FBRouteRequest *)request
+{
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  NSString *runId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"run_id"]));
+  if (runId.length == 0) {
+    return OnDeviceAgentBadRequestPayload(@"Missing query parameter: run_id");
+  }
+  NSString *text = [[OnDeviceAgentManager shared] traceTextFileForRunId:runId name:@"turns.jsonl"] ?: @"";
+  return [[OnDeviceAgentTextPayload alloc] initWithText:text
+                                     contentType:@"application/x-ndjson;charset=UTF-8"
+                                      statusCode:kHTTPStatusCodeOK];
+}
+
++ (id<FBResponsePayload>)handleGetTraceFile:(FBRouteRequest *)request
+{
+  NSString *authError = nil;
+  if (!OnDeviceAgentAuthorizeAgentRoute(request, &authError)) {
+    return OnDeviceAgentUnauthorizedPayload(authError);
+  }
+  NSString *runId = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"run_id"]));
+  NSString *path = OnDeviceAgentTrim(OnDeviceAgentStringOrEmpty(request.parameters[@"path"]));
+  if (runId.length == 0 || path.length == 0) {
+    return OnDeviceAgentBadRequestPayload(@"Missing query parameter: run_id or path");
+  }
+  NSDictionary *file = [[OnDeviceAgentManager shared] traceFileForRunId:runId path:path];
+  return [[OnDeviceAgentJSONPayload alloc] initWithObject:file ?: @{} statusCode:kHTTPStatusCodeOK];
 }
 
 + (id<FBResponsePayload>)handleGetEvents:(FBRouteRequest *)request
