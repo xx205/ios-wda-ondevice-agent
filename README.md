@@ -1,144 +1,230 @@
-# 基于 WebDriverAgent 的 iOS 端侧 Agent
+# iOS On-Device Agent Based on WebDriverAgent
 
-这个仓库提供一个 **实验性** 方案：把 GUI Agent 的闭环（截图 → 调 LLM → 解析动作 → 执行）塞进 `WebDriverAgentRunner-Runner`（`.xctrunner`）的测试进程里运行。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-你不需要在电脑上跑任何 Python 循环；配置（`base_url/model/api_key/task` 等）可以在 iPhone 或本地局域网机器上直接填写，然后让 Runner 在手机上自己跑。
+This repository provides an **experimental** way to run a GUI agent loop inside the `WebDriverAgentRunner-Runner` (`.xctrunner`) test process.
 
-> 仍然需要 macOS + Xcode（至少一次）把 Runner 编译/安装到 iPhone 上；WDA/XCTest 才有跨 App 自动化能力。
+The loop runs on the iPhone-side Runner process:
 
----
+```text
+screenshot -> call LLM -> parse action -> execute tap/swipe/type
+```
 
-## 灵感来源
+You do not need to keep a Python control loop running on your Mac. The agent can be configured from Safari on the iPhone or from another machine on the same LAN, using fields such as `base_url`, `model`, `api_key`, and `task`.
 
-本项目受到以下产品/项目启发：
+> You still need macOS + Xcode at least once to build and install the Runner onto the iPhone. WDA/XCTest is what provides cross-app UI automation capability on iOS.
 
-- 豆包手机（Doubao Phone）的手机端 Agent 交互形态
-- Open-AutoGLM 开源项目
+## TL;DR
 
-## 本仓库提供了什么
+```bash
+git submodule update --init --recursive
+bash scripts/configure_wda_signing.sh --team-id <TEAMID> --bundle-prefix <com.your.prefix>
+bash scripts/apply_patch_to_wda.sh
+bash scripts/install_wda_prepared_runner.sh --device <UDID>
+```
 
-- 一个对 WebDriverAgent (WDA) 的补丁：
-`patches/webdriveragent_ondevice_agent_webui.patch`
-  - 增加一个手机端或局域网机器可访问的页面：`GET /agent`
-  - 在该页面输入 `base_url/model/api_key/task`，点击 Start/Stop 即可
-  - Agent 循环在 Runner 进程内执行：截图、调用 LLM、执行 tap/swipe/type 等
+Then, on the iPhone:
 
-补丁会新增这些 endpoints（都挂在 WDA 的同一个 8100 端口上）：
+1. Open `WebDriverAgentRunner-Runner`.
+2. Open Safari.
+3. Visit `http://127.0.0.1:8100/agent`.
+4. Fill in `Base URL`, `Model`, `API Key` if needed, and `Task`.
+5. Tap **Start**.
 
-- `GET /agent`：配置/启动页面（HTML）
-- `GET /agent/status`：当前运行状态（JSON）
-- `GET /agent/logs`：最近日志（JSON）
-- `GET /agent/chat`：对话历史（JSON）
-- `GET /agent/traces`：已记录的 canonical trace 列表（JSON）
-- `GET /agent/trace/manifest`：指定 trace 的 manifest（JSON）
-- `GET /agent/trace/turns`：指定 trace 的逐步 turn JSONL
-- `GET /agent/trace/file`：指定 trace 内的截图等文件（base64 JSON）
-- `POST /agent/config`：保存配置（JSON body）
-- `POST /agent/start`：保存配置并启动（JSON body）
-- `POST /agent/stop`：停止（无需 body）
-- `POST /agent/reset`：重置运行态（不清空 base_url/model/task，不删除已记住的 API key）
+## What This Repository Provides
 
----
+This repository ships a patch for WebDriverAgent:
 
-## 操作流程
+```text
+patches/webdriveragent_ondevice_agent_webui.patch
+```
 
-### 0) 拉取 WebDriverAgent 子模块
+The patch adds:
 
-本仓库用 `git submodule` 固定引用了 WebDriverAgent（WDA）源码（位于 `third_party/WebDriverAgent`）。
+- `GET /agent`: a web UI served from the same WDA port, usually `8100`.
+- Agent configuration from the iPhone or LAN: `base_url`, `model`, `api_key`, `task`, and related options.
+- An agent loop inside the Runner process for screenshots, LLM calls, action parsing, and action execution.
+- Trace export endpoints for training data, HTML reports, and review videos.
 
-首次 clone 后执行：
+## Prerequisites
+
+- macOS with Xcode installed.
+- An iPhone with Developer Mode enabled.
+- An Apple Developer Team ID. A Personal Team is enough for local testing.
+- A unique bundle identifier prefix, for example `com.yourname.wda`.
+- The target device UDID. You can find it in Xcode or with:
+
+```bash
+xcrun devicectl list devices
+```
+
+Security notes:
+
+- Do not expose the WDA/Runner port, default `8100`, to the public Internet.
+- LAN access to `/agent/*` requires an Agent Token. Configure and protect it before sharing any access link.
+- Avoid "skip TLS verification" on untrusted networks, because API keys can be exposed to man-in-the-middle attacks.
+
+## Quick Start
+
+### 1. Fetch the WebDriverAgent submodule
+
+This repository pins WebDriverAgent as a git submodule at `third_party/WebDriverAgent`.
 
 ```bash
 git submodule update --init --recursive
 ```
 
-### 1)（首次使用）Xcode + Personal Team（免费）一次性准备
+### 2. Prepare Xcode signing
 
-如果你是第一次用 Xcode / Personal Team（免费账号），建议先按这份文档把环境跑通（包含：登录 Apple ID、开启 Developer Mode、验证签名链路等）：
+If this is your first time using Xcode or a Personal Team, run through:
 
 - `docs/recipes/xcode_personal_team_quickstart.md`
 
-### 2) 配置 WDA 的签名与 bundle id（脚本方式）
-
-你需要准备两个占位符：
-
-- `<TEAMID>`：Xcode 里显示的 Team ID（通常 10 位大写字母数字）
-- `<com.your.prefix>`：你自己的 bundle id 前缀（反向域名风格），建议选定后一直固定使用
-
-在仓库根目录执行：
+Then configure WDA signing and bundle identifiers:
 
 ```bash
 bash scripts/configure_wda_signing.sh --team-id <TEAMID> --bundle-prefix <com.your.prefix>
 ```
 
-> 这个脚本只修改你本地的 `third_party/WebDriverAgent` 工作区，不会把个人信息写进本仓库的提交里（但请不要把 submodule 的改动提交出去）。
+This modifies only your local `third_party/WebDriverAgent` working tree. It writes your Team ID into a local xcconfig file inside the submodule. Do not commit those submodule changes.
 
-### 3) iPhone 权限：确保 WDA 的 8100 可达（Wi‑Fi 直连场景）
-
-并确认 iPhone 上：
-
-`Settings -> Apps -> WebDriverAgentRunner-Runner -> Wireless Data` 不是 Off（选 WLAN 或 WLAN & Cellular Data）
-
-否则 `http://<iphone-ip>:8100/...` 可能不可达（`127.0.0.1` 往往仍可达）。
-
-### 4) 在子模块 WDA 目录里应用补丁
-
-在 `third_party/WebDriverAgent` 目录中执行：
-
-```bash
-cd third_party/WebDriverAgent
-git apply ../../patches/webdriveragent_ondevice_agent_webui.patch
-```
-
-或者用脚本一键执行（等价于上面两行）：
+### 3. Apply the on-device agent patch
 
 ```bash
 bash scripts/apply_patch_to_wda.sh
 ```
 
-### 5) 重新安装一次 Runner（让补丁生效）
+Seeing `m third_party/WebDriverAgent` in `git status` after this step is expected. The patch is applied to the submodule working tree so the Runner can expose `/agent/*`.
 
-因为你修改了 WDA 源码，需要重新编译/安装一次 `WebDriverAgentRunner-Runner` 到 iPhone。
+### 4. Install the prepared Runner
 
-之后你只要不再改 WDA 代码，就不需要每次都重新装。
-
-推荐直接用本仓库脚本安装一个“prepared Runner”（更适合点开即用的 on-device 形态）：
+Because WDA source was changed by the patch, rebuild and reinstall `WebDriverAgentRunner-Runner` once:
 
 ```bash
 bash scripts/install_wda_prepared_runner.sh --device <UDID>
 ```
 
-你也可以用其它方式重新安装/启动（例如 Xcode `Product -> Test` / `xcodebuild ... test`）。
+The script builds WDA, prepares the Runner app for direct launch, re-signs it, and installs it to the device.
 
-### 6) 在 iPhone 上直接配置并运行
+You can also use Xcode `Product > Test` or the `xcodebuild` flow described in:
 
-在 iPhone 的 Safari 打开：
+- `docs/recipes/run_wda_xcodebuild.md`
 
-- `http://127.0.0.1:8100/agent`（推荐：不依赖 Wi‑Fi LAN 可达）
+### 5. Start WDA and open the agent UI
 
-或（Wi‑Fi 可达时）：
+On the iPhone:
 
-- `http://<iphone-ip>:8100/agent`
+1. Open `WebDriverAgentRunner-Runner`.
+2. Open Safari.
+3. Visit:
 
-在页面里填：
-- `Base URL`（OpenAI-compatible，例如 `https://...` 或本地网关）
-- `Model`
-- `API Key`（如果你的服务需要）
-- `Task`
+```text
+http://127.0.0.1:8100/agent
+```
 
-然后点击 **Start**。
+`127.0.0.1` here means the iPhone's own loopback address, because Safari is running on the iPhone. If you access WDA from your Mac through USB, use `iproxy` or another port-forwarding setup before using `http://127.0.0.1:8100` on the Mac.
 
-### 7)（可选）用原生 SwiftUI App 代替 Safari 网页
+For LAN access, use:
 
-仓库内带一个原生 iOS 控制台 App：`apps/OnDeviceAgentConsole`。
+```text
+http://<iphone-ip>:8100/agent
+```
 
-它会调用 `http://127.0.0.1:8100/agent/*` 这套接口完成配置/启动/日志/对话等功能（执行端仍然是 WDA Runner）。
+If LAN access does not work, check this setting on the iPhone:
 
-参考：`docs/recipes/ondevice_agent_console_app.md`
+```text
+Settings -> Apps -> WebDriverAgentRunner-Runner -> Wireless Data
+```
 
-### 8) 导出训练轨迹、HTML viewer 和 review 视频
+It should be `WLAN` or `WLAN & Cellular Data`, not `Off`.
 
-Runner 运行结束后，可以把 on-device agent 的 canonical trace 导出成训练数据目录：
+## Access Control and Agent Token
+
+The current Runner code protects `/agent/*` differently for loopback and LAN requests:
+
+- Loopback requests from the iPhone itself, such as `http://127.0.0.1:8100/agent` in iPhone Safari, are allowed without an Agent Token.
+- Non-loopback requests, such as `http://<iphone-ip>:8100/agent` from another device on Wi-Fi, require an Agent Token.
+- If no Agent Token is saved on Runner, LAN requests are rejected with `LAN access denied. Set Agent Token in Console first.`
+- Once a token is saved, LAN clients must send it by one of the supported mechanisms below.
+
+Ways to create or update the token:
+
+- In the Runner web UI, open `http://127.0.0.1:8100/agent` on the iPhone and tap **Rotate token**. The new token is shown once; keep it secret.
+- In the native console app, use **Agent token (for LAN)** -> **Update token**. The app can also copy an access link.
+- Programmatically, post `agent_token` to `/agent/config` from an already-authorized client.
+
+How clients authenticate:
+
+- Tools and native clients should send `X-OnDevice-Agent-Token: <token>`.
+- The bundled Python tools accept `--agent-token <token>` or the `WDA_AGENT_TOKEN` environment variable.
+- Browser access can use `http://<iphone-ip>:8100/agent?token=<token>` as a bootstrap link. If the token is valid, Runner upgrades it to an HttpOnly session cookie named `ondevice_agent_token` and the web UI strips `?token=` from the address bar.
+- Query-token authentication is accepted for the web pages (`/agent` and `/agent/edit`) only. API calls should use the header or the HttpOnly cookie.
+
+Example:
+
+```bash
+export WDA_AGENT_TOKEN="<your-token>"
+python3 tools/wda_remote_tool.py --base-url http://<iphone-ip>:8100 status
+```
+
+## Local Build Verification
+
+These commands are useful when you want to verify that the project compiles before touching a physical device or signing setup.
+
+Build the native SwiftUI console app for an iOS Simulator:
+
+```bash
+SIMULATOR_NAME="iPhone 17"
+
+xcodebuild \
+  -project apps/OnDeviceAgentConsole/OnDeviceAgentConsole.xcodeproj \
+  -scheme OnDeviceAgentConsole \
+  -destination "platform=iOS Simulator,name=$SIMULATOR_NAME" \
+  -derivedDataPath /tmp/mobile_gui_build/OnDeviceAgentConsole \
+  CODE_SIGNING_ALLOWED=NO \
+  build
+```
+
+Build the patched WebDriverAgent Runner for testing on an iOS Simulator:
+
+```bash
+xcodebuild \
+  -project third_party/WebDriverAgent/WebDriverAgent.xcodeproj \
+  -scheme WebDriverAgentRunner \
+  -destination "platform=iOS Simulator,name=$SIMULATOR_NAME" \
+  -derivedDataPath /tmp/mobile_gui_build/WebDriverAgent \
+  CODE_SIGNING_ALLOWED=NO \
+  build-for-testing
+```
+
+If your local simulator names differ, list available devices with:
+
+```bash
+xcrun simctl list devices available
+```
+
+## Native Console App
+
+The repository includes a native SwiftUI console app:
+
+```text
+apps/OnDeviceAgentConsole
+```
+
+It calls `http://127.0.0.1:8100/agent/*` to configure, start, stop, reset, and inspect logs/chat. It does not replace `WebDriverAgentRunner-Runner`; the Runner is still the execution side.
+
+The console app also manages LAN access:
+
+- **Update token** generates a new Agent Token and syncs it to Runner.
+- **Copy access link** builds a `http://<iphone-ip>:8100/agent?token=<token>` link for browser access from another device on the same LAN.
+
+See:
+
+- `docs/recipes/ondevice_agent_console_app.md`
+
+## Export Traces and Reports
+
+After the Runner finishes a task, export the canonical trace as a training dataset:
 
 ```bash
 python3 tools/wda_training_export.py \
@@ -149,105 +235,119 @@ python3 tools/wda_training_export.py \
   --include-repair-samples
 ```
 
-输出目录会包含：
+The output directory contains:
 
-- `trace.json`：canonical trace，保留 run manifest、system prompt、每一步状态、模型响应、解析结果、动作结果和截图引用
-- `dataset.jsonl`：状态/截图/action 训练样本
-- `messages.jsonl`：chat SFT 格式样本
-- `repair_samples.jsonl`：可选的 action 修复样本
-- `images/`：逐步截图
-- `run_meta.json`：导出元数据和计数
+- `trace.json`: canonical trace with manifest, prompts, states, model responses, parsed actions, action results, and screenshot references.
+- `dataset.jsonl`: state/screenshot/action samples.
+- `messages.jsonl`: chat-style SFT samples.
+- `repair_samples.jsonl`: optional action repair samples.
+- `images/`: per-step screenshots.
+- `run_meta.json`: export metadata and counts.
 
-如果通过局域网访问 iPhone，并且已配置 Agent Token：
+If you access the iPhone over LAN and configured an Agent Token:
 
 ```bash
 export WDA_AGENT_TOKEN="<your-token>"
 python3 tools/wda_training_export.py --base-url http://<iphone-ip>:8100 --out-dir training_dataset
 ```
 
-如果你的终端设置了代理环境变量，导出到 `127.0.0.1` 或 iPhone 局域网 IP 时建议绕过代理：
+If your terminal has proxy environment variables, bypass proxies for local or LAN WDA access:
 
 ```bash
 export NO_PROXY="127.0.0.1,localhost,<iphone-ip>"
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 ```
 
-PowerShell：
+PowerShell:
 
 ```powershell
 $env:NO_PROXY = "127.0.0.1,localhost,<iphone-ip>"
 Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY,Env:http_proxy,Env:https_proxy,Env:all_proxy -ErrorAction SilentlyContinue
 ```
 
-生成静态 HTML viewer：
+Generate a static HTML viewer:
 
 ```bash
 python3 tools/wda_training_viewer.py --dataset-dir training_dataset
 ```
 
-如果本机有 `ffmpeg`，可以生成 review 视频：
+Generate a review video if `ffmpeg` is installed:
 
 ```bash
 python3 tools/wda_training_video.py --dataset-dir training_dataset --out training_dataset/trace_review.mp4
 ```
 
-只导出一个轻量 HTML 报告时，可以使用：
+Export a lightweight HTML report:
 
 ```bash
 python3 tools/wda_rich_export.py --base-url http://127.0.0.1:8100 --html agent_report.html
 ```
 
-### 9)（开发者可选）本地调试工具
+## Developer Tools
 
-仓库提供一组本地调试脚本（用于研发/回归，不是终端用户必需）：
+Local scripts are available for development, regression checks, and diagnostics:
 
-- `tools/wda_remote_tool.py`：控制 `/agent/*`、导出 chat/log、生成 HTML 报告
-- `tools/wda_rich_export.py`：导出带配置、日志、token usage 和动作标注的 HTML 报告
-- `tools/wda_training_export.py`：导出 canonical trace、训练 JSONL 和截图
-- `tools/wda_training_viewer.py`：为训练数据目录生成静态 HTML viewer
-- `tools/wda_training_video.py`：把训练数据目录渲染成 review MP4
-- `tools/wda_longshot.py`：通过 WDA 采集并拼接长截图
-- `tools/macos_remote_tool.py`：在 macOS 本机做 app 打开/激活、点击/滑动、截图
+- `tools/wda_remote_tool.py`: control `/agent/*`, export chat/logs, and generate HTML reports.
+- `tools/wda_rich_export.py`: export HTML reports with config, logs, token usage, and action overlays.
+- `tools/wda_training_export.py`: export canonical traces, training JSONL, and screenshots.
+- `tools/wda_training_viewer.py`: generate a static HTML viewer for a training dataset directory.
+- `tools/wda_training_video.py`: render a training dataset directory into a review MP4.
+- `tools/wda_longshot.py`: capture and stitch long screenshots through WDA.
+- `tools/macos_remote_tool.py`: automate local macOS app open/activate, click, swipe, and screenshot operations.
 
-说明见：`tools/README.md`
+See:
 
-### 10) 豆包（火山方舟）接入与缓存说明
+- `tools/README.md`
 
-豆包模型（火山方舟 Ark）接入步骤、API Key 获取、Responses 缓存开通与配置已整理为独立文档：
+## API Reference
+
+The patch adds these endpoints under the same WDA port, usually `8100`:
+
+- `GET /agent`: configuration/start page.
+- `GET /agent/edit`: full-screen text editor page for long task or prompt fields.
+- `GET /agent/status`: current runtime status.
+- `GET /agent/logs`: recent logs.
+- `GET /agent/chat`: conversation history.
+- `GET /agent/traces`: recorded canonical trace list.
+- `GET /agent/trace/manifest`: manifest for a trace.
+- `GET /agent/trace/turns`: per-turn JSONL for a trace.
+- `GET /agent/trace/file`: base64 JSON for screenshots and files inside a trace.
+- `GET /agent/events`: server-sent events stream for live status updates.
+- `GET /agent/step_screenshot`: base64 PNG for one recorded step screenshot.
+- `GET /agent/step_screenshots`: batched step screenshots.
+- `POST /agent/config`: save configuration.
+- `POST /agent/rotate_token`: generate and save a new Agent Token.
+- `POST /agent/start`: save configuration and start.
+- `POST /agent/stop`: stop the agent.
+- `POST /agent/reset`: reset runtime state without clearing `base_url`, `model`, `task`, or remembered API key.
+- `POST /agent/factory_reset`: stop the agent and clear saved config, including Agent Token and remembered API key.
+
+## Model Provider Notes
+
+Doubao / Volcengine Ark setup, API key instructions, Responses cache setup, and related configuration are documented in:
 
 - `docs/recipes/volcengine_doubao_setup.md`
 
----
+## Inspiration
 
-## Disclaimer / 免责声明
+This project was inspired by:
 
-### 中文
+- Doubao Phone's on-device agent interaction model.
+- The Open-AutoGLM open-source project.
 
-本项目提供基于 WebDriverAgent（WDA）的 iOS UI 自动化能力，仅用于学习、研究与开发测试。
-
-使用前请注意：
-
-- 授权与合规：仅在你拥有或已获明确授权的设备、账号与应用上使用。对第三方 App 的自动化操作可能违反其服务条款或当地法规，后果由你自行承担。
-- 风险操作：自动化可能发生误触/误输入，导致数据修改、信息泄露、下单/支付等不可逆操作。涉及资金、隐私或重要账号（如银行/支付/企业管理后台）请谨慎使用，并优先启用人工确认/接管流程。
-- 安全：不要将 WDA/Runner 的端口（默认 8100）暴露到公网。若启用了局域网访问，请启用并妥善保管 Agent Token。在不可信网络中不要开启“跳过 TLS 校验”，否则 API 密钥可能遭中间人攻击泄露。
-- 隐私：运行过程中可能产生屏幕截图、日志与导出报告，其中可能包含敏感信息。分享或提交 issue 前请自行脱敏与清理。
-- 无担保：本项目按“原样（AS IS）”提供，不对任何直接或间接损失负责。你使用本项目即表示理解并接受上述风险。
-
-### English
+## Disclaimer
 
 This project provides iOS UI automation based on WebDriverAgent (WDA) for learning, research, and development/testing purposes only.
 
 Please read before use:
 
-- Authorization & compliance: Use only on devices, accounts, and apps you own or are explicitly authorized to access. Automating third‑party apps may violate their Terms of Service and/or local laws. You are solely responsible for any consequences.
-- Risky actions: Automation can mis-click or mis-type, potentially causing irreversible actions such as data modification, information disclosure, ordering, or payments. Be extra cautious with financial/privacy‑sensitive apps (e.g., banking/payment/admin consoles) and prefer human confirmation/takeover.
-- Security: Do not expose the WDA/Runner port (default 8100) to the public Internet. If LAN access is enabled, use and protect an Agent Token. Do not enable “skip TLS verification” on untrusted networks, or your API key may be exposed to MITM attacks.
+- Authorization and compliance: Use only on devices, accounts, and apps you own or are explicitly authorized to access. Automating third-party apps may violate their Terms of Service and/or local laws. You are solely responsible for any consequences.
+- Risky actions: Automation can mis-click or mis-type, potentially causing irreversible actions such as data modification, information disclosure, ordering, or payments. Be extra cautious with financial, privacy-sensitive, or important account apps, such as banking, payment, or admin consoles. Prefer human confirmation/takeover.
+- Security: Do not expose the WDA/Runner port, default `8100`, to the public Internet. If LAN access is enabled, use and protect an Agent Token. Do not enable "skip TLS verification" on untrusted networks, or your API key may be exposed to MITM attacks.
 - Privacy: Screenshots, logs, and exported reports may contain sensitive data. Redact and clean them before sharing or filing issues.
-- No warranty: This project is provided “AS IS”, without warranties of any kind, and the authors are not liable for any damages. By using this project, you acknowledge and accept these risks.
-
----
+- No warranty: This project is provided "AS IS", without warranties of any kind, and the authors are not liable for any damages. By using this project, you acknowledge and accept these risks.
 
 ## License
 
-- This repository is primarily licensed under the Apache License 2.0 (see `LICENSE`).
-- WebDriverAgent (submodule) is licensed under BSD 3‑Clause, and some files in this repo are derived from it (see `THIRD_PARTY_NOTICES.md`).
+- This repository is primarily licensed under the Apache License 2.0. See `LICENSE`.
+- WebDriverAgent, the submodule, is licensed under BSD 3-Clause. Some files in this repository are derived from it. See `THIRD_PARTY_NOTICES.md`.
