@@ -44,13 +44,14 @@ patches/webdriveragent_ondevice_agent_webui.patch
 - `GET /agent`：从 WDA 同一个端口（通常是 `8100`）提供 Web UI。
 - 在 iPhone 或局域网机器上配置 Agent：`base_url`、`model`、`api_key`、`task` 等。
 - 在 Runner 进程内执行 Agent 循环：截图、LLM 调用、动作解析、动作执行。
-- 训练轨迹、HTML 报告、review 视频所需的导出接口。
+- 训练轨迹、HTML viewer、review 视频所需的导出接口。
 
 ## 前置条件
 
 - macOS，并已安装 Xcode。
 - 一台已开启 Developer Mode 的 iPhone。
 - Apple Developer Team ID。Personal Team 足够本地测试。
+  - 注意：不要把 `Apple Development: ... (...)` 证书显示名里括号中的值直接当成 Team ID；应以 Apple Developer 账号页面或 provisioning profile 的 `TeamIdentifier` 为准。
 - 唯一的 bundle identifier 前缀，例如 `com.yourname.wda`。
 - 目标设备 UDID。可以在 Xcode 里查看，也可以运行：
 
@@ -222,7 +223,7 @@ apps/OnDeviceAgentConsole
 
 - `docs/recipes/ondevice_agent_console_app.md`
 
-## 导出轨迹和报告
+## 导出轨迹和 Viewer
 
 Runner 运行结束后，可以把 canonical trace 导出成训练数据目录：
 
@@ -230,7 +231,6 @@ Runner 运行结束后，可以把 canonical trace 导出成训练数据目录�
 python3 tools/wda_training_export.py \
   --base-url http://127.0.0.1:8100 \
   --out-dir training_dataset \
-  --source auto \
   --include-parsed-json \
   --include-repair-samples
 ```
@@ -277,18 +277,11 @@ python3 tools/wda_training_viewer.py --dataset-dir training_dataset
 python3 tools/wda_training_video.py --dataset-dir training_dataset --out training_dataset/trace_review.mp4
 ```
 
-导出轻量 HTML 报告：
-
-```bash
-python3 tools/wda_rich_export.py --base-url http://127.0.0.1:8100 --html agent_report.html
-```
-
 ## 开发工具
 
 仓库提供一组用于研发、回归和诊断的本地脚本：
 
-- `tools/wda_remote_tool.py`：控制 `/agent/*`、导出 chat/log、生成 HTML 报告。
-- `tools/wda_rich_export.py`：导出带配置、日志、token usage 和动作标注的 HTML 报告。
+- `tools/wda_remote_tool.py`：控制 `/agent/*`、查看实时 chat/log、保存原始 chat JSONL。
 - `tools/wda_training_export.py`：导出 canonical trace、训练 JSONL 和截图。
 - `tools/wda_training_viewer.py`：为训练数据目录生成静态 HTML viewer。
 - `tools/wda_training_video.py`：把训练数据目录渲染成 review MP4。

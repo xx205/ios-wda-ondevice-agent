@@ -1606,7 +1606,6 @@ def build_view_model(dataset_dir: Path, out_html: Path) -> Dict[str, Any]:
         raise ValueError(f"Invalid canonical trace: {trace_path}")
     messages = _read_jsonl(dataset_dir / "messages.jsonl") if (dataset_dir / "messages.jsonl").exists() else []
     run_meta = _read_json(dataset_dir / "run_meta.json", {})
-    status = _read_json(dataset_dir / "status.json", {})
     data_source = "trace.json"
     samples = _build_samples_from_trace(dataset_dir, out_dir, trace)
     system = _system_from_trace(trace)
@@ -1621,7 +1620,6 @@ def build_view_model(dataset_dir: Path, out_html: Path) -> Dict[str, Any]:
             "counts": trace.get("counts", {}) if isinstance(trace, dict) and isinstance(trace.get("counts"), dict) else {},
         },
         "run_meta": run_meta if isinstance(run_meta, dict) else {},
-        "status": status if isinstance(status, dict) else {},
         "system": system,
         "summary": _summarize(
             dataset_dir=dataset_dir,

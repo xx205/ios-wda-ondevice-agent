@@ -10,6 +10,7 @@
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
 #import <UserNotifications/UserNotifications.h>
+#import <objc/runtime.h>
 #import <math.h>
 
 #import <WebDriverAgentLib/FBDebugLogDelegateDecorator.h>
@@ -108,6 +109,20 @@ static NSUInteger const kOnDeviceAgentChatCompletionsMaxNonSystemMessages = 24; 
 @end
 
 static UIWindow *gOnDeviceAgentConnectivityAlertWindow = nil;
+static char gOnDeviceAgentButtonHandlerKey;
+
+@interface OnDeviceAgentButtonHandler : NSObject
+@property (nonatomic, copy) dispatch_block_t block;
+@end
+
+@implementation OnDeviceAgentButtonHandler
+- (void)invoke:(__unused id)sender
+{
+  if (self.block != nil) {
+    self.block();
+  }
+}
+@end
 static NSObject<UNUserNotificationCenterDelegate> *gOnDeviceAgentNotificationDelegate = nil;
 
 @interface OnDeviceAgentNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
@@ -265,48 +280,6 @@ static BOOL OnDeviceAgentShouldWarnAboutNoInternetAtStartup(void)
   return YES;
 }
 
-static UIWindow *OnDeviceAgentFindKeyWindow(void)
-{
-  UIApplication *app = UIApplication.sharedApplication;
-  if (@available(iOS 13.0, *)) {
-    for (UIScene *scene in app.connectedScenes) {
-      if (scene.activationState != UISceneActivationStateForegroundActive) {
-        continue;
-      }
-      if (![scene isKindOfClass:UIWindowScene.class]) {
-        continue;
-      }
-      for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-        if (w.isKeyWindow) {
-          return w;
-        }
-      }
-    }
-    for (UIScene *scene in app.connectedScenes) {
-      if (![scene isKindOfClass:UIWindowScene.class]) {
-        continue;
-      }
-      for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-        if (!w.hidden) {
-          return w;
-        }
-      }
-    }
-  }
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  UIWindow *kw = app.keyWindow;
-#pragma clang diagnostic pop
-  if (kw != nil) {
-    return kw;
-  }
-  if (app.windows.count > 0) {
-    return app.windows.firstObject;
-  }
-  return nil;
-}
-
 static UIWindow *OnDeviceAgentEnsureAlertWindow(void)
 {
   if (gOnDeviceAgentConnectivityAlertWindow != nil) {
@@ -330,39 +303,154 @@ static UIWindow *OnDeviceAgentEnsureAlertWindow(void)
   if (gOnDeviceAgentConnectivityAlertWindow == nil) {
     gOnDeviceAgentConnectivityAlertWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   }
+  gOnDeviceAgentConnectivityAlertWindow.frame = UIScreen.mainScreen.bounds;
   gOnDeviceAgentConnectivityAlertWindow.windowLevel = UIWindowLevelAlert + 1;
   gOnDeviceAgentConnectivityAlertWindow.rootViewController = [UIViewController new];
   [gOnDeviceAgentConnectivityAlertWindow makeKeyAndVisible];
   return gOnDeviceAgentConnectivityAlertWindow;
 }
 
-static UIViewController *OnDeviceAgentTopViewController(void)
+static void OnDeviceAgentDismissConnectivityAlertWindow(void)
 {
-  UIWindow *w = OnDeviceAgentFindKeyWindow();
-  UIViewController *vc = w.rootViewController;
-  if (vc == nil) {
-    vc = OnDeviceAgentEnsureAlertWindow().rootViewController;
+  if (gOnDeviceAgentConnectivityAlertWindow != nil) {
+    gOnDeviceAgentConnectivityAlertWindow.hidden = YES;
+    gOnDeviceAgentConnectivityAlertWindow.rootViewController = nil;
+    gOnDeviceAgentConnectivityAlertWindow = nil;
   }
-  if (vc == nil) {
-    return nil;
+}
+
+static UIColor *OnDeviceAgentSystemBackgroundColor(void)
+{
+  if (@available(iOS 13.0, *)) {
+    return UIColor.systemBackgroundColor;
+  }
+  return UIColor.whiteColor;
+}
+
+static UIColor *OnDeviceAgentSecondaryBackgroundColor(void)
+{
+  if (@available(iOS 13.0, *)) {
+    return UIColor.secondarySystemBackgroundColor;
+  }
+  return [UIColor colorWithWhite:0.95 alpha:1.0];
+}
+
+static UIColor *OnDeviceAgentLabelColor(void)
+{
+  if (@available(iOS 13.0, *)) {
+    return UIColor.labelColor;
+  }
+  return UIColor.blackColor;
+}
+
+static UIColor *OnDeviceAgentSecondaryLabelColor(void)
+{
+  if (@available(iOS 13.0, *)) {
+    return UIColor.secondaryLabelColor;
+  }
+  return [UIColor colorWithWhite:0.25 alpha:1.0];
+}
+
+static void OnDeviceAgentAttachButtonHandler(UIButton *button, dispatch_block_t block)
+{
+  OnDeviceAgentButtonHandler *handler = [OnDeviceAgentButtonHandler new];
+  handler.block = block;
+  [button addTarget:handler action:@selector(invoke:) forControlEvents:UIControlEventTouchUpInside];
+  objc_setAssociatedObject(button, &gOnDeviceAgentButtonHandlerKey, handler, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static UIButton *OnDeviceAgentConnectivityAlertButton(NSString *title, BOOL primary)
+{
+  UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  [button setTitle:title forState:UIControlStateNormal];
+  button.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+  button.layer.cornerRadius = 10.0;
+  button.clipsToBounds = YES;
+  if (primary) {
+    button.backgroundColor = UIColor.systemBlueColor;
+    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  } else {
+    button.backgroundColor = OnDeviceAgentSecondaryBackgroundColor();
+    [button setTitleColor:UIColor.systemBlueColor forState:UIControlStateNormal];
+  }
+  [button.heightAnchor constraintEqualToConstant:44.0].active = YES;
+  return button;
+}
+
+static void OnDeviceAgentPresentConnectivityAlert(NSString *title, NSString *message, NSString *dismiss, NSString *openSettings)
+{
+  UIWindow *window = OnDeviceAgentEnsureAlertWindow();
+  UIViewController *vc = window.rootViewController;
+  if (vc == nil || vc.view == nil) {
+    return;
   }
 
-  while (vc.presentedViewController != nil) {
-    vc = vc.presentedViewController;
+  UIView *root = vc.view;
+  for (UIView *subview in root.subviews) {
+    [subview removeFromSuperview];
   }
-  if ([vc isKindOfClass:UINavigationController.class]) {
-    UIViewController *visible = ((UINavigationController *)vc).visibleViewController;
-    if (visible != nil) {
-      vc = visible;
+  root.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.18];
+
+  UIView *card = [UIView new];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  card.backgroundColor = OnDeviceAgentSystemBackgroundColor();
+  card.layer.cornerRadius = 16.0;
+  card.layer.shadowColor = UIColor.blackColor.CGColor;
+  card.layer.shadowOpacity = 0.22f;
+  card.layer.shadowRadius = 20.0;
+  card.layer.shadowOffset = CGSizeMake(0.0, 8.0);
+  [root addSubview:card];
+
+  UILabel *titleLabel = [UILabel new];
+  titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  titleLabel.text = title;
+  titleLabel.textAlignment = NSTextAlignmentCenter;
+  titleLabel.numberOfLines = 0;
+  titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+  titleLabel.textColor = OnDeviceAgentLabelColor();
+
+  UILabel *messageLabel = [UILabel new];
+  messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  messageLabel.text = message;
+  messageLabel.textAlignment = NSTextAlignmentCenter;
+  messageLabel.numberOfLines = 0;
+  messageLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightRegular];
+  messageLabel.textColor = OnDeviceAgentSecondaryLabelColor();
+
+  UIButton *settingsButton = OnDeviceAgentConnectivityAlertButton(openSettings, YES);
+  UIButton *dismissButton = OnDeviceAgentConnectivityAlertButton(dismiss, NO);
+
+  UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, messageLabel, settingsButton, dismissButton]];
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  stack.axis = UILayoutConstraintAxisVertical;
+  stack.alignment = UIStackViewAlignmentFill;
+  stack.spacing = 12.0;
+  [stack setCustomSpacing:18.0 afterView:messageLabel];
+  [card addSubview:stack];
+
+  CGFloat screenWidth = CGRectGetWidth(UIScreen.mainScreen.bounds);
+  CGFloat cardWidth = MIN(330.0, MAX(260.0, screenWidth - 48.0));
+  [NSLayoutConstraint activateConstraints:@[
+    [card.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
+    [card.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],
+    [card.widthAnchor constraintEqualToConstant:cardWidth],
+    [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:20.0],
+    [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+    [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+    [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18.0],
+  ]];
+
+  OnDeviceAgentAttachButtonHandler(dismissButton, ^{
+    OnDeviceAgentDismissConnectivityAlertWindow();
+  });
+  OnDeviceAgentAttachButtonHandler(settingsButton, ^{
+    NSURL *url = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+    if (url != nil && [UIApplication.sharedApplication canOpenURL:url]) {
+      [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
     }
-  }
-  if ([vc isKindOfClass:UITabBarController.class]) {
-    UIViewController *selected = ((UITabBarController *)vc).selectedViewController;
-    if (selected != nil) {
-      vc = selected;
-    }
-  }
-  return vc;
+    OnDeviceAgentDismissConnectivityAlertWindow();
+  });
 }
 
 static void OnDeviceAgentPresentNoInternetAlertOnce(void)
@@ -371,11 +459,6 @@ static void OnDeviceAgentPresentNoInternetAlertOnce(void)
   dispatch_once(&onceToken, ^{
     dispatch_async(dispatch_get_main_queue(), ^{
       void (^present)(void) = ^{
-        UIViewController *vc = OnDeviceAgentTopViewController();
-        if (vc == nil) {
-          return;
-        }
-
         NSString *title = OnDeviceAgentIsChinesePreferredLanguage()
           ? @"网络连接不可用"
           : @"No Internet Connection";
@@ -383,37 +466,9 @@ static void OnDeviceAgentPresentNoInternetAlertOnce(void)
           ? @"Runner 暂时无法联网。请打开 Wi-Fi 或蜂窝网络，并在 iPhone 设置中为 Runner 开启“无线数据”，然后重新打开 Runner。"
           : @"Runner can't reach the Internet. Turn on Wi-Fi or Cellular Data, and make sure Runner's Wireless Data is enabled in Settings. Then reopen Runner.";
 
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-
         NSString *openSettings = OnDeviceAgentIsChinesePreferredLanguage() ? @"打开设置" : @"Open Settings";
         NSString *dismiss = OnDeviceAgentIsChinesePreferredLanguage() ? @"稍后" : @"Not now";
-
-        __weak UIAlertController *weakAC = ac;
-        [ac addAction:[UIAlertAction actionWithTitle:dismiss style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) {
-          [weakAC dismissViewControllerAnimated:YES completion:nil];
-          if (gOnDeviceAgentConnectivityAlertWindow != nil) {
-            gOnDeviceAgentConnectivityAlertWindow.hidden = YES;
-            gOnDeviceAgentConnectivityAlertWindow.rootViewController = nil;
-            gOnDeviceAgentConnectivityAlertWindow = nil;
-          }
-        }]];
-        [ac addAction:[UIAlertAction actionWithTitle:openSettings style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-          NSURL *url = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
-          if (url != nil && [UIApplication.sharedApplication canOpenURL:url]) {
-            [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
-          }
-          if (gOnDeviceAgentConnectivityAlertWindow != nil) {
-            gOnDeviceAgentConnectivityAlertWindow.hidden = YES;
-            gOnDeviceAgentConnectivityAlertWindow.rootViewController = nil;
-            gOnDeviceAgentConnectivityAlertWindow = nil;
-          }
-        }]];
-
-        // Avoid presenting multiple times if something else is already on screen.
-        if (vc.presentedViewController != nil) {
-          return;
-        }
-        [vc presentViewController:ac animated:YES completion:nil];
+        OnDeviceAgentPresentConnectivityAlert(title, message, dismiss, openSettings);
       };
 
       UIApplication *app = UIApplication.sharedApplication;

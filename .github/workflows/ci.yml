@@ -24,7 +24,7 @@ jobs:
           python -m py_compile \
             scripts/test_plan_merge_regressions.py \
             tools/wda_remote_tool.py \
-            tools/wda_rich_export.py \
+            tools/wda_export_common.py \
             tools/wda_training_export.py \
             tools/wda_training_viewer.py \
             tools/wda_training_video.py

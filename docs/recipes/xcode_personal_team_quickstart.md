@@ -28,6 +28,15 @@
 2. 页面向下滚动到 “Membership details”（会员资格详细信息）
 3. 找到 “Team ID” 字段（即 `<TEAMID>`）
 
+> 注意：不要直接从钥匙串里证书显示名的括号内容推断 `<TEAMID>`。例如证书可能显示为 `Apple Development: you@example.com (8N57Z97K54)`，但真正用于 `DEVELOPMENT_TEAM` 的值可能是证书 subject 里的 `OU`，也必须和 provisioning profile 的 `TeamIdentifier` 一致。遇到签名问题时，以 Apple Developer 账号页面的 Team ID 或 profile 里的 `TeamIdentifier` 为准。
+
+如果需要从本机 profile 反查 Team ID，可以选一个相关的 `.mobileprovision` 文件运行：
+
+```bash
+security cms -D -i "/path/to/profile.mobileprovision" \
+  | /usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' /dev/stdin
+```
+
 ### `<com.your.prefix>` 是什么
 
 `<com.your.prefix>` 是你要使用的 **Bundle ID 前缀**（反向域名风格），例如：
@@ -158,6 +167,7 @@ bash scripts/install_wda_prepared_runner.sh --device <UDID>
 - **签名/描述文件报错**
   - 确认 Xcode 已登录 Apple ID，并存在 `Personal Team`
   - 先按上面的“普通 App 上机”跑通一次
+  - 确认 `DEVELOPMENT_TEAM` 用的是 Apple Developer 账号页面的 Team ID，或 provisioning profile 的 `TeamIdentifier`；不要把 `Apple Development: ... (...)` 里括号中的值误当成 Team ID
 - **局域网访问 `<iphone-ip>:8100` 超时**
   - iPhone：`Settings -> Apps -> WebDriverAgentRunner-Runner -> Wireless Data` 不能是 Off
   - 也可以直接用 `127.0.0.1`（不依赖局域网）

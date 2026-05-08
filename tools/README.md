@@ -8,7 +8,16 @@ These tools are not required for end users to run the product flow, but they are
 
 - `tools/wda_remote_tool.py`
   - Controls `/agent/*` endpoints exposed by Runner.
-  - Supports polling, start/stop/reset, chat/log export, and HTML report generation with screenshots.
+  - Supports polling, start/stop/reset, live dashboard, chat/log inspection, and raw chat JSONL export.
+
+- `tools/wda_training_export.py`
+  - Exports canonical traces, training JSONL, and screenshots into a dataset directory.
+
+- `tools/wda_training_viewer.py`
+  - Generates a static HTML viewer from a canonical training dataset directory.
+
+- `tools/wda_training_video.py`
+  - Renders a training dataset directory into a review MP4.
 
 - `tools/wda_longshot.py`
   - Captures and stitches long screenshots from iPhone via WDA.
@@ -25,8 +34,9 @@ These tools are not required for end users to run the product flow, but they are
 # Query runner status
 python3 tools/wda_remote_tool.py --base-url http://127.0.0.1:8100 status
 
-# Export chat as HTML report
-python3 tools/wda_remote_tool.py --base-url http://127.0.0.1:8100 chat --html /tmp/agent_chat.html
+# Export canonical trace as a dataset, then generate the HTML viewer
+python3 tools/wda_training_export.py --base-url http://127.0.0.1:8100 --out-dir /tmp/agent_dataset
+python3 tools/wda_training_viewer.py --dataset-dir /tmp/agent_dataset
 
 # Capture long screenshot from iPhone via WDA
 python3 tools/wda_longshot.py --base http://127.0.0.1:8100 --out-dir /tmp/run_longshot

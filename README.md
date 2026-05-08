@@ -44,13 +44,14 @@ The patch adds:
 - `GET /agent`: a web UI served from the same WDA port, usually `8100`.
 - Agent configuration from the iPhone or LAN: `base_url`, `model`, `api_key`, `task`, and related options.
 - An agent loop inside the Runner process for screenshots, LLM calls, action parsing, and action execution.
-- Trace export endpoints for training data, HTML reports, and review videos.
+- Trace export endpoints for training data, HTML viewers, and review videos.
 
 ## Prerequisites
 
 - macOS with Xcode installed.
 - An iPhone with Developer Mode enabled.
 - An Apple Developer Team ID. A Personal Team is enough for local testing.
+  - Do not infer the Team ID from the parenthesized value in a certificate display name like `Apple Development: ... (...)`; use the Apple Developer account page or the provisioning profile `TeamIdentifier`.
 - A unique bundle identifier prefix, for example `com.yourname.wda`.
 - The target device UDID. You can find it in Xcode or with:
 
@@ -222,7 +223,7 @@ See:
 
 - `docs/recipes/ondevice_agent_console_app.md`
 
-## Export Traces and Reports
+## Export Traces and Viewers
 
 After the Runner finishes a task, export the canonical trace as a training dataset:
 
@@ -230,7 +231,6 @@ After the Runner finishes a task, export the canonical trace as a training datas
 python3 tools/wda_training_export.py \
   --base-url http://127.0.0.1:8100 \
   --out-dir training_dataset \
-  --source auto \
   --include-parsed-json \
   --include-repair-samples
 ```
@@ -277,18 +277,11 @@ Generate a review video if `ffmpeg` is installed:
 python3 tools/wda_training_video.py --dataset-dir training_dataset --out training_dataset/trace_review.mp4
 ```
 
-Export a lightweight HTML report:
-
-```bash
-python3 tools/wda_rich_export.py --base-url http://127.0.0.1:8100 --html agent_report.html
-```
-
 ## Developer Tools
 
 Local scripts are available for development, regression checks, and diagnostics:
 
-- `tools/wda_remote_tool.py`: control `/agent/*`, export chat/logs, and generate HTML reports.
-- `tools/wda_rich_export.py`: export HTML reports with config, logs, token usage, and action overlays.
+- `tools/wda_remote_tool.py`: control `/agent/*`, inspect live chat/logs, and save raw chat JSONL.
 - `tools/wda_training_export.py`: export canonical traces, training JSONL, and screenshots.
 - `tools/wda_training_viewer.py`: generate a static HTML viewer for a training dataset directory.
 - `tools/wda_training_video.py`: render a training dataset directory into a review MP4.

@@ -121,158 +121,6 @@ def pretty_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=False)
 
 
-def export_chat_html(
-    *,
-    base_url: str,
-    out_path: Path,
-    timeout: float,
-    max_screenshot_steps: Optional[int],
-) -> None:
-    status = unwrap_wda_value(api_get(base_url, "/agent/status", timeout))
-    chat = unwrap_wda_value(api_get(base_url, "/agent/chat", timeout))
-    logs = unwrap_wda_value(api_get(base_url, "/agent/logs", timeout))
-
-    items: List[Dict[str, Any]] = []
-    if isinstance(chat, dict) and isinstance(chat.get("items"), list):
-        items = [i for i in chat["items"] if isinstance(i, dict)]
-
-    step_values: List[int] = []
-    for item in items:
-        try:
-            step = int(item.get("step"))
-            if step >= 0:
-                step_values.append(step)
-        except Exception:  # noqa: BLE001
-            continue
-
-    unique_steps = sorted(set(step_values))
-    if max_screenshot_steps is not None and max_screenshot_steps > 0:
-        unique_steps = unique_steps[-max_screenshot_steps:]
-
-    screenshots_by_step: Dict[int, str] = {}
-    for step in unique_steps:
-        resp = unwrap_wda_value(api_get(base_url, f"/agent/step_screenshot?step={step}", timeout))
-        if isinstance(resp, dict) and resp.get("ok") is True and isinstance(resp.get("png_base64"), str):
-            screenshots_by_step[step] = resp["png_base64"]
-
-    title = "WDA On‑Device Agent — Chat export"
-    css = """
-      :root{color-scheme:light dark;--bg:#fff;--fg:#111;--muted:#666;--card:#f6f6f6;--border:#ccc;--primary:#0a84ff;--radius:12px;}
-      @media (prefers-color-scheme: dark){:root{--bg:#0b0b0c;--fg:#f2f2f2;--muted:#b0b0b0;--card:#1c1c1e;--border:#3a3a3c;--primary:#0a84ff;}}
-      html,body{height:100%;}
-      body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);}
-      .wrap{max-width:980px;margin:0 auto;padding:20px;}
-      h1{margin:0 0 6px 0;font-size:18px;}
-      .meta{color:var(--muted);font-size:13px;margin-bottom:14px;}
-      .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin:12px 0;}
-      .row{display:flex;gap:12px;flex-wrap:wrap;}
-      .pill{display:inline-block;padding:3px 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;color:var(--muted);}
-      .kind{color:var(--primary);border-color:var(--primary);}
-      pre{white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:13px;line-height:1.35;margin:10px 0 0 0;}
-      img{max-width:100%;border-radius:12px;border:1px solid var(--border);background:#000;}
-      details{margin-top:10px;}
-      details summary{cursor:pointer;color:var(--muted);}
-      .col{flex:1 1 360px;min-width:320px;}
-    """
-
-    def esc(s: Any) -> str:
-        return html.escape("" if s is None else str(s))
-
-    def render_raw_details(raw_value: Any) -> str:
-        if raw_value is None:
-            return ""
-        return (
-            "<details><summary>Raw JSON</summary>"
-            f"<pre>{esc(raw_value)}</pre>"
-            "</details>"
-        )
-
-    def render_item(item: Dict[str, Any]) -> str:
-        step = item.get("step")
-        kind = item.get("kind") or ""
-        attempt = item.get("attempt")
-        ts = item.get("ts") or ""
-        parts = [
-            "<div class='card'>",
-            "<div class='row'>",
-            f"<span class='pill kind'>{esc(kind)}</span>",
-            f"<span class='pill'>step {esc(step)}</span>",
-        ]
-        if attempt is not None:
-            parts.append(f"<span class='pill'>attempt {esc(attempt)}</span>")
-        if ts:
-            parts.append(f"<span class='pill'>{esc(ts)}</span>")
-        parts.append("</div>")
-
-        step_i = None
-        try:
-            step_i = int(step)
-        except Exception:  # noqa: BLE001
-            step_i = None
-        if kind == "request" and step_i is not None and step_i in screenshots_by_step:
-            parts.append(
-                "<div style='margin-top:10px;'>"
-                f"<img alt='screenshot step {step_i}' src='data:image/png;base64,{screenshots_by_step[step_i]}' />"
-                "</div>"
-            )
-
-        if kind == "request":
-            parts.append(f"<pre>{esc(item.get('text') or '')}</pre>")
-        elif kind == "response":
-            content = item.get("content") or ""
-            parts.append(f"<pre>{esc(content)}</pre>")
-            if item.get("reasoning"):
-                parts.append("<details><summary>Reasoning</summary>")
-                parts.append(f"<pre>{esc(item.get('reasoning'))}</pre>")
-                parts.append("</details>")
-        else:
-            parts.append(f"<pre>{esc(pretty_json(item))}</pre>")
-
-        parts.append(render_raw_details(item.get("raw")))
-        parts.append("</div>")
-        return "".join(parts)
-
-    status_pre = esc(pretty_json(status))
-    logs_lines: List[str] = []
-    if isinstance(logs, dict) and isinstance(logs.get("lines"), list):
-        logs_lines = [str(x) for x in logs["lines"]]
-    logs_text = esc("\n".join(logs_lines))
-
-    rendered = [
-        "<!doctype html>",
-        "<html><head>",
-        "<meta charset='utf-8' />",
-        "<meta name='viewport' content='width=device-width, initial-scale=1' />",
-        f"<title>{esc(title)}</title>",
-        f"<style>{css}</style>",
-        "</head><body>",
-        "<div class='wrap'>",
-        f"<h1>{esc(title)}</h1>",
-        f"<div class='meta'>Generated at {_now_iso()} · base_url={esc(base_url)}</div>",
-        "<div class='card'>",
-        "<div class='row'>",
-        "<div class='col'>",
-        "<div class='pill'>Status</div>",
-        f"<pre>{status_pre}</pre>",
-        "</div>",
-        "<div class='col'>",
-        "<div class='pill'>Logs</div>",
-        f"<pre>{logs_text}</pre>",
-        "</div>",
-        "</div>",
-        "</div>",
-        "<div class='card'>",
-        f"<div class='pill'>Chat items ({len(items)})</div>",
-        "</div>",
-    ]
-
-    for item in items:
-        rendered.append(render_item(item))
-
-    rendered.extend(["</div>", "</body></html>"])
-    _write_text(out_path, "".join(rendered))
-
-
 def _read_request_body(handler: http.server.BaseHTTPRequestHandler, max_bytes: int = 2_000_000) -> bytes:
     length = handler.headers.get("Content-Length")
     if length is None:
@@ -712,17 +560,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         _write_text(out, "\n".join(lines) + ("\n" if lines else ""))
         print(f"Wrote JSONL: {out}")
 
-    if args.html:
-        out = Path(args.html)
-        export_chat_html(
-            base_url=args.base_url,
-            out_path=out,
-            timeout=args.timeout,
-            max_screenshot_steps=args.max_screenshot_steps,
-        )
-        print(f"Wrote HTML: {out}")
-
-    if not args.jsonl and not args.html:
+    if not args.jsonl:
         print(pretty_json({"items": items}))
     return 0
 
@@ -814,22 +652,13 @@ def cmd_run_until_responses(args: argparse.Namespace) -> int:
             break
         time.sleep(poll)
 
-    if args.export_html:
-        out = Path(args.export_html)
-        export_chat_html(
-            base_url=args.base_url,
-            out_path=out,
-            timeout=args.timeout,
-            max_screenshot_steps=args.max_screenshot_steps,
-        )
-        print(f"Wrote HTML: {out}")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="wda_remote_tool.py",
-        description="Local helper to control /agent endpoints and export chat with screenshots.",
+        description="Local helper to control /agent endpoints and inspect live chat.",
     )
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help=f"WDA base URL (default: {DEFAULT_BASE_URL})")
     p.add_argument("--agent-token", default=AGENT_TOKEN, help="Agent token for LAN access (or WDA_AGENT_TOKEN)")
@@ -844,15 +673,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--tail", type=int, default=0, help="Print only last N lines")
     pl.set_defaults(func=cmd_logs)
 
-    pc = sub.add_parser("chat", help="GET /agent/chat (optionally export)")
+    pc = sub.add_parser("chat", help="GET /agent/chat (optionally write JSONL)")
     pc.add_argument("--jsonl", help="Write chat items as JSON Lines (.jsonl)")
-    pc.add_argument("--html", help="Write chat export as a single HTML file (embeds screenshots)")
-    pc.add_argument(
-        "--max-screenshot-steps",
-        type=int,
-        default=0,
-        help="If > 0, embed screenshots only for the last N steps (faster)",
-    )
     pc.set_defaults(func=cmd_chat)
 
     ppng = sub.add_parser("step-screenshot", help="GET /agent/step_screenshot?step=N and save PNG")
@@ -880,13 +702,6 @@ def build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--responses", type=int, default=5, help="Stop after this many response items (default: 5)")
     prun.add_argument("--poll-seconds", type=float, default=0.5, help="Polling interval in seconds (default: 0.5)")
     prun.add_argument("--max-seconds", type=float, default=180.0, help="Give up after this many seconds (default: 180)")
-    prun.add_argument("--export-html", help="Export chat as HTML after stop")
-    prun.add_argument(
-        "--max-screenshot-steps",
-        type=int,
-        default=0,
-        help="If > 0, embed screenshots only for the last N steps (faster)",
-    )
     prun.set_defaults(func=cmd_run_until_responses)
 
     def add_post(name: str, path: str, help_text: str) -> None:
