@@ -2,6 +2,22 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+## Demo Videos
+
+### Xiaohongshu → Feishu spreadsheet · 3m 30s
+
+Browse Apple's posts on Xiaohongshu, collect like counts and cover text, and enter them into a Feishu spreadsheet. The recording includes action annotations.
+
+https://github.com/user-attachments/assets/e4f59102-6e49-4334-a80e-c06037f1e1f2
+
+### Farm Heroes Super Saga · 56s
+
+Start a game task from the Console and perform match-three moves in Farm Heroes Super Saga.
+
+https://github.com/user-attachments/assets/4cb791a0-d719-4850-b2f7-2ce11ca1bd03
+
+## Overview
+
 This repository provides an **experimental** way to run a GUI agent loop inside the `WebDriverAgentRunner-Runner` (`.xctrunner`) test process.
 
 The loop runs on the iPhone-side Runner process:
@@ -13,16 +29,6 @@ screenshot -> call LLM -> parse action -> execute tap/swipe/type
 You do not need to keep a Python control loop running on your Mac. The agent can be configured from Safari on the iPhone or from another machine on the same LAN, using fields such as `base_url`, `model`, `api_key`, and `task`.
 
 > You still need macOS + Xcode at least once to build and install the Runner onto the iPhone. WDA/XCTest is what provides cross-app UI automation capability on iOS.
-
-## Demo Videos
-
-Two recorded examples of the on-device agent in action. Click a preview or link to download and watch the original MP4.
-
-| Xiaohongshu → Feishu spreadsheet | Farm Heroes Super Saga |
-| --- | --- |
-| [<img src="docs/media/xiaohongshu-to-feishu.jpg" width="220" alt="On-device agent task: collect Apple posts from Xiaohongshu into a Feishu spreadsheet">](docs/media/xiaohongshu-to-feishu.mp4?raw=true) | [<img src="docs/media/farm-heroes-super-saga.jpg" width="220" alt="On-device agent playing a match-three level in Farm Heroes Super Saga">](docs/media/farm-heroes-super-saga.mp4?raw=true) |
-| Browse Apple's posts on Xiaohongshu, collect like counts and cover text, and enter them into a Feishu spreadsheet. The recording includes action annotations. | Start a game task from the Console and perform match-three moves in Farm Heroes Super Saga. |
-| [Download MP4 · 3m 30s](docs/media/xiaohongshu-to-feishu.mp4?raw=true) | [Download MP4 · 56s](docs/media/farm-heroes-super-saga.mp4?raw=true) |
 
 ## TL;DR
 
