@@ -16,13 +16,13 @@ You do not need to keep a Python control loop running on your Mac. The agent can
 
 ## Demo Videos
 
-Two recorded examples of the on-device agent in action. Click a preview or video link to watch the MP4.
+Two recorded examples of the on-device agent in action. Click a preview or link to download and watch the original MP4.
 
 | Xiaohongshu → Feishu spreadsheet | Farm Heroes Super Saga |
 | --- | --- |
-| [<img src="docs/media/xiaohongshu-to-feishu.jpg" width="220" alt="On-device agent task: collect Apple posts from Xiaohongshu into a Feishu spreadsheet">](docs/media/xiaohongshu-to-feishu.mp4) | [<img src="docs/media/farm-heroes-super-saga.jpg" width="220" alt="On-device agent playing a match-three level in Farm Heroes Super Saga">](docs/media/farm-heroes-super-saga.mp4) |
+| [<img src="docs/media/xiaohongshu-to-feishu.jpg" width="220" alt="On-device agent task: collect Apple posts from Xiaohongshu into a Feishu spreadsheet">](docs/media/xiaohongshu-to-feishu.mp4?raw=true) | [<img src="docs/media/farm-heroes-super-saga.jpg" width="220" alt="On-device agent playing a match-three level in Farm Heroes Super Saga">](docs/media/farm-heroes-super-saga.mp4?raw=true) |
 | Browse Apple's posts on Xiaohongshu, collect like counts and cover text, and enter them into a Feishu spreadsheet. The recording includes action annotations. | Start a game task from the Console and perform match-three moves in Farm Heroes Super Saga. |
-| [Watch video · 3m 30s](docs/media/xiaohongshu-to-feishu.mp4) | [Watch video · 56s](docs/media/farm-heroes-super-saga.mp4) |
+| [Download MP4 · 3m 30s](docs/media/xiaohongshu-to-feishu.mp4?raw=true) | [Download MP4 · 56s](docs/media/farm-heroes-super-saga.mp4?raw=true) |
 
 ## TL;DR
 
