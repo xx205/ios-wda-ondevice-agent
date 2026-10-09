@@ -2,6 +2,22 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+## 演示视频
+
+### 小红书 → 飞书表格 · 3 分 30 秒
+
+浏览小红书苹果账号的笔记，收集点赞量和封面文字，并填写到飞书表格中；录屏包含动作标注。
+
+https://github.com/user-attachments/assets/e4f59102-6e49-4334-a80e-c06037f1e1f2
+
+### 农场超级传奇 · 56 秒
+
+从 Console 发起游戏任务，在农场超级传奇中执行三消操作。
+
+https://github.com/user-attachments/assets/4cb791a0-d719-4850-b2f7-2ce11ca1bd03
+
+## 项目简介
+
 这个仓库提供一个 **实验性** 方案：把 GUI Agent 的闭环放进 `WebDriverAgentRunner-Runner`（`.xctrunner`）测试进程里运行。
 
 循环在 iPhone 端的 Runner 进程内执行：
@@ -13,16 +29,6 @@
 你不需要在 Mac 上常驻一个 Python 控制循环。Agent 可以直接在 iPhone Safari 或同一局域网内的机器上配置，配置项包括 `base_url`、`model`、`api_key`、`task` 等。
 
 > 仍然需要 macOS + Xcode 至少一次，把 Runner 编译并安装到 iPhone 上。WDA/XCTest 才是 iOS 跨 App UI 自动化能力的来源。
-
-## 演示视频
-
-下面两段录屏展示端侧 Agent 的实际操作流程。点击预览图或链接即可下载原始 MP4 观看。
-
-| 小红书 → 飞书表格 | 农场超级传奇 |
-| --- | --- |
-| [<img src="docs/media/xiaohongshu-to-feishu.jpg" width="220" alt="端侧 Agent 任务：将小红书苹果账号的笔记整理到飞书表格">](docs/media/xiaohongshu-to-feishu.mp4?raw=true) | [<img src="docs/media/farm-heroes-super-saga.jpg" width="220" alt="端侧 Agent 在农场超级传奇中操作三消关卡">](docs/media/farm-heroes-super-saga.mp4?raw=true) |
-| 浏览小红书苹果账号的笔记，收集点赞量和封面文字，并填写到飞书表格中；录屏包含动作标注。 | 从 Console 发起游戏任务，在农场超级传奇中执行三消操作。 |
-| [下载观看 · 3 分 30 秒](docs/media/xiaohongshu-to-feishu.mp4?raw=true) | [下载观看 · 56 秒](docs/media/farm-heroes-super-saga.mp4?raw=true) |
 
 ## 最短路径
 
