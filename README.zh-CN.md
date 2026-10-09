@@ -14,6 +14,16 @@
 
 > 仍然需要 macOS + Xcode 至少一次，把 Runner 编译并安装到 iPhone 上。WDA/XCTest 才是 iOS 跨 App UI 自动化能力的来源。
 
+## 演示视频
+
+下面两段录屏展示端侧 Agent 的实际操作流程。点击预览图或视频链接即可查看 MP4。
+
+| 小红书 → 飞书表格 | 农场超级传奇 |
+| --- | --- |
+| [<img src="docs/media/xiaohongshu-to-feishu.jpg" width="220" alt="端侧 Agent 任务：将小红书苹果账号的笔记整理到飞书表格">](docs/media/xiaohongshu-to-feishu.mp4) | [<img src="docs/media/farm-heroes-super-saga.jpg" width="220" alt="端侧 Agent 在农场超级传奇中操作三消关卡">](docs/media/farm-heroes-super-saga.mp4) |
+| 浏览小红书苹果账号的笔记，收集点赞量和封面文字，并填写到飞书表格中；录屏包含动作标注。 | 从 Console 发起游戏任务，在农场超级传奇中执行三消操作。 |
+| [观看视频 · 3 分 30 秒](docs/media/xiaohongshu-to-feishu.mp4) | [观看视频 · 56 秒](docs/media/farm-heroes-super-saga.mp4) |
+
 ## 最短路径
 
 ```bash

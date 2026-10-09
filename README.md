@@ -14,6 +14,16 @@ You do not need to keep a Python control loop running on your Mac. The agent can
 
 > You still need macOS + Xcode at least once to build and install the Runner onto the iPhone. WDA/XCTest is what provides cross-app UI automation capability on iOS.
 
+## Demo Videos
+
+Two recorded examples of the on-device agent in action. Click a preview or video link to watch the MP4.
+
+| Xiaohongshu → Feishu spreadsheet | Farm Heroes Super Saga |
+| --- | --- |
+| [<img src="docs/media/xiaohongshu-to-feishu.jpg" width="220" alt="On-device agent task: collect Apple posts from Xiaohongshu into a Feishu spreadsheet">](docs/media/xiaohongshu-to-feishu.mp4) | [<img src="docs/media/farm-heroes-super-saga.jpg" width="220" alt="On-device agent playing a match-three level in Farm Heroes Super Saga">](docs/media/farm-heroes-super-saga.mp4) |
+| Browse Apple's posts on Xiaohongshu, collect like counts and cover text, and enter them into a Feishu spreadsheet. The recording includes action annotations. | Start a game task from the Console and perform match-three moves in Farm Heroes Super Saga. |
+| [Watch video · 3m 30s](docs/media/xiaohongshu-to-feishu.mp4) | [Watch video · 56s](docs/media/farm-heroes-super-saga.mp4) |
+
 ## TL;DR
 
 ```bash
